@@ -1,0 +1,4 @@
+#include <winuser.h>
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "bb-launcher.manifest"
+// The first icon is the one Explorer shows.
+1 ICON "../../launcher/bloodborne.ico"

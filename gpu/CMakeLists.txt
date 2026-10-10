@@ -285,6 +285,11 @@ if (WIN32)
     add_executable(bb-play WIN32 ../packaging/windows/play.c ../packaging/windows/play.rc)
     target_compile_options(bb-play PRIVATE -municode)
     target_link_options(bb-play PRIVATE -municode)
+    # Classic native launcher (packaging/windows/bb-launcher.c): settings dialog + Run,
+    # plain Win32 with visual styles, no frameworks. Links only system libraries.
+    add_executable(bb-launcher WIN32 ../packaging/windows/bb-launcher.c
+        ../packaging/windows/bb-launcher.rc)
+    target_link_libraries(bb-launcher PRIVATE shell32 ole32 comctl32)
 endif()
 
 # Explicit test targets; neither launches the game nor needs a Vulkan device.

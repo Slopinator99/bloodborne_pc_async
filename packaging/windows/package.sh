@@ -59,6 +59,7 @@ rm -rf -- out/stage
 mkdir -p "$dest/bin" "$dest/launcher"
 cp -r out/pyi-dist/Bloodborne/. "$dest/"
 llvm-strip -o "$dest/Play Bloodborne.exe" out/bb-play.exe
+llvm-strip -o "$dest/bb-launcher.exe" out/bb-launcher.exe
 cp launcher/bloodborne.ico launcher/bloodborne.png "$dest/launcher/"
 cp -r launcher/art "$dest/launcher/"
 cp -r launcher/qml "$dest/launcher/"
@@ -88,9 +89,21 @@ for exe in bb-probe.exe bb-gpu-capabilities.exe; do
     llvm-strip --strip-debug -o "$dest/bin/$exe" "out/$exe"
 done
 # Every DLL the executables load from the CLANG64 tree (SDL3, FFmpeg, Vulkan loader, ...).
-ldd "$dest/bin/bb-probe.exe" "$dest/bin/bb-gpu-capabilities.exe" |
+ldd "$dest/bin/bb-probe.exe" "$dest/bin/bb-gpu-capabilities.exe" out/bb-launcher.exe |
     awk '/\/clang64\/bin\// {print $3}' | sort -u | while read -r dll; do
         cp -u "$dll" "$dest/bin/"
+    done
+# Some dependencies resolve to C:\Windows\System32 on the build machine (e.g. xvidcore.dll
+# installed by another program) and the sweep above then misses them, breaking clean
+# machines. Prefer our own CLANG64 build of every dependency that has one there.
+# vulkan-1.dll stays the system's by design (the GPU driver's loader).
+clang_bin=${MSYS2_ROOT:-/c/msys64}/clang64/bin
+ldd "$dest/bin/bb-probe.exe" "$dest/bin/bb-gpu-capabilities.exe" out/bb-launcher.exe |
+    awk '{print $1}' | sort -u | while read -r name; do
+        if [[ $name != vulkan-1.dll && -f $clang_bin/$name && ! -f $dest/bin/$name ]]; then
+            echo "packaging: bundling $clang_bin/$name (was resolving to System32)"
+            cp -u "$clang_bin/$name" "$dest/bin/"
+        fi
     done
 cp -r scripts patches "$dest/"
 # Hunter's Atlas (tools/atlas/README.md): its art and generator source, and the frozen generator
