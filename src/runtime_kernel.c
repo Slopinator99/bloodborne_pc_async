@@ -158,6 +158,7 @@ static ABI int32_t get_pid(void) { return 1000; }
 static ABI int32_t yield(void) { sched_yield(); return 0; }
 static ABI __attribute__((noreturn)) void hard_exit(int status) {
     printf("Runtime: guest requested _exit(%d)\n",status);
+    fprintf(stderr,"Runtime: guest requested _exit(%d)\n",status);
     runtime_report();
     fflush(stdout);
     _exit(status);

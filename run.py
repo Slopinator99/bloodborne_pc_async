@@ -136,7 +136,7 @@ def run_script(name, *args, capture=False, optional=False):
     command = [sys.executable, *script, str(PORT / 'scripts' / name), *map(str, args)]
     if capture:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True,
-                                creationflags=no_console())
+                                encoding='utf-8', errors='replace', creationflags=no_console())
     else:
         # stdin given: the output handles are passed explicitly (a windowed Bloodborne.exe child
         # would get none otherwise).
@@ -283,7 +283,16 @@ def start_companions(data, env, game_pid):
     return started
 
 
+def force_utf8():
+    """Logs are a UTF-8 contract: redirected streams default to the ANSI codepage (cp1252)."""
+    os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='replace')
+
+
 def main():
+    force_utf8()
     args = sys.argv[1:]
     if len(args) >= 2 and args[0] == '--after':
         wait_for(int(args[1]))
@@ -455,7 +464,8 @@ def main():
                 live = '0'  # without the checker, the safe answer: no live changes
                 if caps.is_file():
                     result = subprocess.run([str(caps), '--live-resolution'], stdin=subprocess.DEVNULL,
-                                            stdout=subprocess.PIPE, text=True, creationflags=no_console())
+                                            stdout=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
+                                            creationflags=no_console())
                     live = result.stdout.strip() if result.returncode == 0 else '0'
             live = '1' if live == '1' or not patched else '0'
         from patches import hud_canvas, ultrawide
@@ -568,7 +578,9 @@ def main():
         started = []
         try:
             started = start_companions(data, env, game_proc.pid)
-            return game_proc.wait()
+            rc = game_proc.wait()
+            print(f'run.py: bb-probe exited with code {rc}', file=sys.stderr)
+            return rc
         finally:
             for proc in started:
                 proc.terminate()
