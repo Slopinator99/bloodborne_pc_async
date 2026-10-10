@@ -65,6 +65,7 @@ done
 game=$("$PYTHON" scripts/mods.py "$game" --out "$out" \
     --mods-dir "${BB_MODS_DIR:-$data/mods}" --config "${BB_MODS_CONFIG:-$data/mods.json}" \
     --enabled "${BB_MODS_ENABLED:-1}" ${generated[@]+"${generated[@]}"} ${bundled[@]+"${bundled[@]}"})
+game=${game%$'\r'}  # Windows Python ends lines with CRLF
 # A private merged view lasts for this launch, including restarts. Cleanup only our own view.
 if [[ $game != "$(realpath "$original_game")" ]]; then
     mod_game=$game
@@ -98,6 +99,9 @@ fps=${BB_FPS:-uncap}
 # discrete GPUs get them); off when unset. 1080p output and TAA always use the live path.
 if [[ -z ${BB_RENDER_RES:-} ]]; then
     read -r scaled_render scaled_output < <("$PYTHON" scripts/patches.py --print-scaled --settings "$BB_CONFIG") || true
+    # Windows Python ends lines with CRLF, and read keeps the carriage return.
+    scaled_render=${scaled_render%$'\r'}
+    scaled_output=${scaled_output%$'\r'}
 fi
 live=0
 if [[ -n ${scaled_output:-} ]]; then
@@ -105,6 +109,7 @@ if [[ -n ${scaled_output:-} ]]; then
     # Bash builtins only: the AppImage's PATH has no sed/grep (a missing one ended run.sh silently).
     if [[ -z $live && -f $BB_CONFIG ]]; then
         while IFS= read -r line || [[ -n $line ]]; do
+            line=${line%$'\r'}  # bbport.ini is CRLF on Windows
             [[ $line =~ ^live_resolution=([01]|auto)$ ]] && live=${BASH_REMATCH[1]}
         done < "$BB_CONFIG"
     fi

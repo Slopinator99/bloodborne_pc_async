@@ -12,6 +12,21 @@ import unittest
 
 
 class RestartResolutionTests(unittest.TestCase):
+    def posix_path_for_bash(self, bash, path):
+        """POSIX form of a Windows path for MSYS2/Cygwin bash (drive-letter mapping).
+
+        A Windows PATH handed to such a bash is mangled at spawn (C:\\Users\\... becomes
+        an alias like /home/... that cannot execute); compute the working form instead."""
+        text = str(path)
+        if os.name == 'nt' and len(text) > 2 and text[1] == ':':
+            uname = subprocess.run([bash, '-c', 'uname -s'], stdout=subprocess.PIPE,
+                                   text=True).stdout.strip().upper()
+            drive, rest = text[0].lower(), text[2:].replace('\\', '/')
+            if 'CYGWIN' in uname:
+                return f'/cygdrive/{drive}{rest}'
+            return f'/{drive}{rest}'  # MSYS/MINGW (MSYS2, Git Bash)
+        return text
+
     def run_restarts(self, explicit=False, live=False, ini_extra='', caps=None, bare_path=False):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
@@ -66,7 +81,12 @@ class RestartResolutionTests(unittest.TestCase):
                 tools.mkdir()
                 for name in ('bash', 'dirname', 'mkdir', 'realpath'):
                     (tools / name).symlink_to(shutil.which(name))
-                env['PATH'] = str(tools)
+                for name in ('sed', 'grep'):  # fail loudly if run.sh ever needs them
+                    (tools / name).write_text('#!/bin/sh\necho "STUB: run.sh must not use $0" >&2\nexit 127\n',
+                                              encoding='utf-8', newline='\n')
+                    (tools / name).chmod(0o755)
+                env['PATH'] = (self.posix_path_for_bash(shutil.which('bash'), tools) +
+                               os.pathsep + env.get('PATH', ''))
             subprocess.run([shutil.which('bash'), 'run.sh'], cwd=ROOT, env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=30)
             return [json.loads(line) for line in (data / 'environments').read_text().splitlines()]
