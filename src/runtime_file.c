@@ -513,8 +513,31 @@ static int64_t do_write(int fd,const void *buffer,uint64_t size) {
     int h=host_fd_written(fd);
     if (h<0) return -EBADF;
     offset_lock(fd);
-    ssize_t n=host_write(h,buffer,size);
-    int e=errno;
+    ssize_t n;
+    int e;
+    if (h<3) {
+        /* Guest stdio shares the host console with our own printf diagnostics.
+         * stdout is unbuffered, so one printf is several write syscalls: hold the
+         * stdio lock so lines from different threads (the game's notices vs our
+         * frame/pipeline stats) cannot interleave mid-line. printf already takes
+         * this lock; the raw write below was the only party missing it. */
+        FILE *console=h==2 ? stderr : stdout;
+#ifdef _WIN32
+        _lock_file(console);
+#else
+        flockfile(console);
+#endif
+        n=host_write(h,buffer,size);
+        e=errno;
+#ifdef _WIN32
+        _unlock_file(console);
+#else
+        funlockfile(console);
+#endif
+    } else {
+        n=host_write(h,buffer,size);
+        e=errno;
+    }
     offset_unlock(fd);
     if (n<0) return -e;
     __atomic_add_fetch(&writes,1,__ATOMIC_RELAXED);
