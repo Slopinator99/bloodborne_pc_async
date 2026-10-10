@@ -3,9 +3,15 @@
 
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <variant>
+#include <vector>
 #include <unordered_map>
 #include <shared_mutex>
-#include <variant>
 #include <boost/container/static_vector.hpp>
 #include <tsl/robin_map.h>
 #include "shader_recompiler/profile.h"
@@ -145,6 +151,20 @@ public:
 
     const ComputePipeline* GetComputePipeline();
 
+    /// bbport: async pipeline compilation (BB_ASYNC_PIPELINES=1). A miss enqueues an
+    /// owned snapshot and returns null (the draw is skipped this frame, as the callers
+    /// already handle); a background thread compiles and inserts it for later frames.
+    /// Off by default: misses compile synchronously as before.
+    bool AsyncEnabled() const noexcept {
+        return async_enabled;
+    }
+    /// bbport: draws skipped on async placeholders since the last drain. The rasterizer
+    /// drains this at frame start and resets temporal history instead of accumulating
+    /// a partial frame.
+    u64 DrainAsyncSkipped() {
+        return async_skipped.exchange(0, std::memory_order_acq_rel);
+    }
+
     using Result = std::tuple<const Shader::Info*, vk::ShaderModule,
                               std::optional<Shader::Gcn::FetchShaderData>, u64>;
     Result GetProgram(PipelineSelection& sel, Shader::HwStage stage, Shader::SwStage l_stage,
@@ -195,6 +215,59 @@ private:
     const PreparedDraw* used_prepared = nullptr;
     tsl::robin_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_pipelines;
     tsl::robin_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_pipelines;
+    /// bbport: guards both pipeline maps, num_new_pipelines and module_related_pipelines.
+    /// Short critical sections only, never held across driver compilation. Lock order with
+    /// async_queue_mutex (queue only): maps first, queue second; the worker takes each alone.
+    std::mutex pipelines_mutex;
+    /// bbport: serializes vkCreate*Pipelines against the shared VkPipelineCache object
+    /// (required external sync), taken by the GPU thread and the async worker alike.
+    std::mutex pipeline_create_mutex;
+    /// bbport: background compilation queue. Snapshots own every value the constructor
+    /// reads. Shader::Info pointees are stable (program_cache entries are never erased),
+    /// but their per-draw user data is NOT: the GPU thread rewrites user_data /
+    /// flattened_ud_buf / pgm_base for every draw it decodes. Each stage therefore
+    /// carries owned copies, installed as thread-local UdSnapshots on the worker (the
+    /// codebase's own mechanism, see vk_rasterizer.cpp) so GetSharp reads our frame.
+    struct AsyncStageData {
+        std::vector<u32> user_data;
+        std::vector<u32> flat;
+        VAddr pgm_base = 0;
+        bool valid = false;
+    };
+    struct AsyncGraphicsJob {
+        GraphicsPipelineKey key;
+        u64 hash;
+        std::array<Shader::RuntimeInfo, MaxShaderStages> runtime_infos;
+        std::array<const Shader::Info*, MaxShaderStages> infos{};
+        std::array<vk::ShaderModule, MaxShaderStages> modules{};
+        std::optional<Shader::Gcn::FetchShaderData> fetch_shader;
+        std::array<AsyncStageData, MaxShaderStages> stages;
+    };
+    struct AsyncComputeJob {
+        ComputePipelineKey key;
+        u64 hash;
+        const Shader::Info* info = nullptr;
+        vk::ShaderModule module{};
+        AsyncStageData stage;
+    };
+    using AsyncJob = std::variant<AsyncGraphicsJob, AsyncComputeJob>;
+    std::mutex async_queue_mutex;
+    std::condition_variable async_queue_cv;
+    std::queue<AsyncJob> async_queue;
+    std::thread async_thread;
+    std::atomic<bool> async_stop{false};
+    bool async_enabled = false;
+    // Cumulative jobs; pending = enqueued - finished.
+    std::atomic<u64> async_enqueued{0}, async_finished{0};
+    /// bbport: draws skipped on async placeholders since the last drain (see the
+    /// public DrainAsyncSkipped).
+    std::atomic<u64> async_skipped{0};
+
+    void StartAsyncThread();
+    void StopAsyncThread();
+    void AsyncLoop();
+    void CompileAsyncGraphics(AsyncGraphicsJob job);
+    void CompileAsyncCompute(AsyncComputeJob job);
     PipelineSelection sel{}; ///< GPU thread selection state
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start

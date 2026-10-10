@@ -32,6 +32,9 @@ extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
 namespace Vulkan {
 extern std::atomic<u64> g_bb_compile_ns;
 extern std::atomic<u32> g_bb_compiles;
+extern std::atomic<u64> g_bb_async_enqueued;
+extern std::atomic<u64> g_bb_async_finished;
+extern std::atomic<u64> g_bb_async_skipped;
 } // namespace Vulkan
 
 namespace Libraries::VideoOut {
@@ -424,6 +427,9 @@ void VideoOutDriver::Flip(const Request& req) {
         if (window >= 5.0) {
             const u32 compiles = Vulkan::g_bb_compiles.exchange(0);
             const u64 compile_ns = Vulkan::g_bb_compile_ns.exchange(0);
+            const u64 async_enq = Vulkan::g_bb_async_enqueued.exchange(0);
+            const u64 async_fin = Vulkan::g_bb_async_finished.exchange(0);
+            const u64 async_skip = Vulkan::g_bb_async_skipped.exchange(0);
             const u64 direct = Vulkan::Scheduler::direct_recordings.exchange(0);
             const u64 faults = BbStats::tracker_faults.exchange(0);
             // GPU command thread CPU time per draw: comparable between builds even when the scene
@@ -439,12 +445,16 @@ void VideoOutDriver::Flip(const Request& req) {
             window_gpu_us = gpu_us;
             std::printf("Frame stats: %.1f FPS, worst frame %.1f ms (vblank %u Hz); "
                         "%u shader/pipeline compiles, %.1f ms; %llu recorder syncs; "
+                        "async %llu enq/%llu done/%llu skipped; "
                         "%.0f write faults/s, %lld hot pages; GPU thread %.2f us/draw, "
                         "%.0f draws/frame, idle %.1f%%; blocked: recorder %.1f%%, host copies "
                         "%.1f%% (%.0f/frame), copy threads %.1f%%, GPU ticks %.1f%%; "
                         "reduced-size draws %.0f/frame of %.0f in the scene\n",
                         frames / window, worst_ms, EmulatorSettings.GetVblankFrequency(), compiles,
                         compile_ns / 1e6, static_cast<unsigned long long>(direct),
+                        static_cast<unsigned long long>(async_enq),
+                        static_cast<unsigned long long>(async_fin),
+                        static_cast<unsigned long long>(async_skip),
                         faults / window, static_cast<long long>(BbStats::hot_pages.load()),
                         us_per_draw, draws_per_frame,
                         BbStats::gpu_idle_ns.exchange(0) / (window * 1e7),

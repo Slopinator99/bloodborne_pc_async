@@ -252,7 +252,7 @@ APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'
                 'hdr': False, 'present_mode': 'Mailbox',
                 'fps_mode': '120', 'frame_cap': '', 'draw_pipe': '', 'readbacks': '',
                 'frames_ahead': '', 'vram_budget_mb': '', 'frame_stats': False, 'gpu_profile': False,
-                'vk_validation': False, 'extra_env': '', 'close_on_play': False,
+                'vk_validation': False, 'async_pipelines': False, 'extra_env': '', 'close_on_play': False,
                 'check_updates': True, 'online': False, 'online_server': 'srv.shadps4.net:31313',
                 'online_webapi': '', 'online_npid': '', 'online_password': '', 'online_upnp': True,
                 'coop_name': '', 'coop_password': '', 'coop_invite': '',
@@ -804,7 +804,7 @@ def game_environment(s):
         if s[key]:
             env[name] = s[key]
     for key, name in (('frame_stats', 'BB_FRAME_STATS'), ('gpu_profile', 'BB_GPU_PROFILE'),
-                      ('vk_validation', 'BB_VK_VALIDATION')):
+                      ('vk_validation', 'BB_VK_VALIDATION'), ('async_pipelines', 'BB_ASYNC_PIPELINES')):
         if s[key]:
             env[name] = '1'
     for item in str(s['extra_env']).split():
@@ -1940,6 +1940,8 @@ class Launcher:
         self.section(f, _('Diagnostics', 'Для разработчика'))
         self.check(f, 'frame_stats', 'app', _('Frame statistics in the log (every 5 s)', 'Статистика кадров в журнале (раз в 5 с)'))
         self.check(f, 'gpu_profile', 'app', _('GPU time per pass in the log', 'Профиль GPU в журнале'))
+        self.check(f, 'async_pipelines', 'app', _('Async pipeline compilation (fewer stutters on new areas; experimental)',
+                                                 'Асинхронная компиляция пайплайнов (меньше фризов в новых зонах; экспериментально)'))
         self.check(f, 'vk_validation', 'app', _('Vulkan validation layers (needs the Vulkan SDK; much slower)',
                                                 'Слои валидации Vulkan (нужен Vulkan SDK; сильно замедляет)'))
         self.row(f, _('Extra variables', 'Доп. переменные'), ttk.Entry(f, textvariable=self.var('extra_env', 'app'), width=58),

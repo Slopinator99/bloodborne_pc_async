@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <xxhash.h>
 #include <mutex>
 #include <set>
@@ -982,6 +983,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         FrameCapture::IsDisplayBuffer(regs.color_buffers[0].Address())) {
         scene_started = false;
         camera_motion->OnDisplayPass(cb_descs[0].first);
+        // bbport: async placeholders skipped draws this frame: reset temporal history
+        // instead of blending a partial frame into it (tinted trails). Drained here so
+        // the count covers the whole finished frame; RequestHistoryReset lands before
+        // OnFrameStart consumes it.
+        if (pipeline_cache.DrainAsyncSkipped() > 0) {
+            upscaler->RequestHistoryReset();
+        }
         if (upscaler->OnFrameStart()) {
             object_motion->InvalidateHistory();
             camera_motion->InvalidateHistory();
@@ -1136,6 +1144,15 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
 
     const vk::Pipeline handle = pipeline->Handle();
+    // bbport: never feed the driver a null pipeline (it fast-fails reading the null
+    // object). Reports once-in-a-while instead of crashing the session.
+    if (!handle) {
+        static std::atomic<u64> null_binds{0};
+        if (++null_binds <= 8) {
+            std::printf("Rasterizer: skipping bind of null pipeline\n");
+        }
+        return;
+    }
     const u32 num_indices = regs.num_indices;
     const u32 num_instances = regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
@@ -1260,6 +1277,15 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)
                                  : sizeof(VkDrawIndirectCommand)));
     const vk::Pipeline handle = pipeline->Handle();
+    // bbport: never feed the driver a null pipeline (it fast-fails reading the null
+    // object). Reports once-in-a-while instead of crashing the session.
+    if (!handle) {
+        static std::atomic<u64> null_binds{0};
+        if (++null_binds <= 8) {
+            std::printf("Rasterizer: skipping bind of null pipeline\n");
+        }
+        return;
+    }
     const vk::Buffer args = buffer->Handle();
     const u64 args_offset = base;
     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
@@ -1342,6 +1368,15 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     pipeline->BindResources(set_writes, push_data);
 
     const vk::Pipeline handle = pipeline->Handle();
+    // bbport: never feed the driver a null pipeline (it fast-fails reading the null
+    // object). Reports once-in-a-while instead of crashing the session.
+    if (!handle) {
+        static std::atomic<u64> null_binds{0};
+        if (++null_binds <= 8) {
+            std::printf("Rasterizer: skipping bind of null pipeline\n");
+        }
+        return;
+    }
     const u32 dim_x = cs_program.dim_x, dim_y = cs_program.dim_y, dim_z = cs_program.dim_z;
     if (FrameCapture::Active()) {
         FrameCapture::Dispatch(cs.pgm_hash, dim_x, dim_y, dim_z);
@@ -1405,6 +1440,15 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     pipeline->BindResources(set_writes, push_data);
 
     const vk::Pipeline handle = pipeline->Handle();
+    // bbport: never feed the driver a null pipeline (it fast-fails reading the null
+    // object). Reports once-in-a-while instead of crashing the session.
+    if (!handle) {
+        static std::atomic<u64> null_binds{0};
+        if (++null_binds <= 8) {
+            std::printf("Rasterizer: skipping bind of null pipeline\n");
+        }
+        return;
+    }
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatchIndirect(args, args_offset);

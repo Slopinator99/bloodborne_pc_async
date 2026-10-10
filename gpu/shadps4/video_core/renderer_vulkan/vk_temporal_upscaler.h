@@ -72,6 +72,12 @@ public:
 
     /// Start of a frame in the command stream (display pass).
     bool OnFrameStart();
+    /// bbport: async pipeline placeholders skipped draws this frame: drop temporal
+    /// history instead of accumulating a partial frame (color trails for a frame beat
+    /// tinted trails for thirty). Called before OnFrameStart.
+    void RequestHistoryReset() {
+        reset = true;
+    }
     bool RasterScaling() const;
     /// bbport: LOD bias for scene materials, log2(render / output) while a reduced scene is
     /// upscaled (0 at native size, for TAA and without an upscaler).

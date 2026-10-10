@@ -352,13 +352,35 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     // Preloaded pipelines use the same driver cache as runtime pipelines. bbport: the rasterizer
     // calls WarmUp() once object motion has fixed its buffer addresses (motion shader variants
     // embed them, so the shader pre-build translates those for this session).
+
+    // bbport: background pipeline compilation, off unless requested (BB_ASYNC_PIPELINES=1).
+    // A miss enqueues an owned snapshot and skips the draw this frame; the worker inserts
+    // the pipeline for the following frames.
+    if (const char* env = std::getenv("BB_ASYNC_PIPELINES")) {
+        async_enabled = env[0] == '1';
+    }
+    if (async_enabled) {
+        StartAsyncThread();
+        std::printf("Async pipeline compilation on (1 worker, BB_ASYNC_PIPELINES=1)\n");
+    }
 }
 
-PipelineCache::~PipelineCache() = default;
+PipelineCache::~PipelineCache() {
+    StopAsyncThread();
+}
 
 // bbport: shader/pipeline compile time on the GPU thread, reported by BB_FRAME_STATS.
 std::atomic<u64> g_bb_compile_ns;
 std::atomic<u32> g_bb_compiles;
+// bbport: background compiles use their own counters so the frame stats keep showing
+// only what stalled the GPU thread.
+std::atomic<u64> g_bb_async_ns;
+std::atomic<u32> g_bb_async_compiles;
+// bbport: async queue depth over time (BB_FRAME_STATS): enqueued, finished, placeholder
+// skips. A crash with pending (enqueued - finished) > 0 points at in-flight work.
+std::atomic<u64> g_bb_async_enqueued;
+std::atomic<u64> g_bb_async_finished;
+std::atomic<u64> g_bb_async_skipped;
 namespace {
 struct CompileTimer {
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -393,7 +415,129 @@ bool CheckProgram(const auto& pgm, Shader::HwStage stage) {
 bool TakeBadProgram() {
     return std::exchange(g_bad_program, false);
 }
+
+struct AsyncCompileTimer {
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ~AsyncCompileTimer() {
+        g_bb_async_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now() - start)
+                                 .count());
+        ++g_bb_async_compiles;
+    }
+};
 } // namespace
+
+void PipelineCache::StartAsyncThread() {
+    async_thread = std::thread([this] { AsyncLoop(); });
+}
+
+void PipelineCache::StopAsyncThread() {
+    if (!async_thread.joinable()) {
+        return;
+    }
+    async_stop.store(true, std::memory_order_release);
+    async_queue_cv.notify_all();
+    async_thread.join();
+}
+
+void PipelineCache::AsyncLoop() {
+    while (true) {
+        std::optional<AsyncJob> job;
+        {
+            std::unique_lock lk{async_queue_mutex};
+            async_queue_cv.wait(lk, [&] {
+                return async_stop.load(std::memory_order_acquire) || !async_queue.empty();
+            });
+            if (async_stop.load(std::memory_order_acquire) && async_queue.empty()) {
+                return;
+            }
+            job.emplace(std::move(async_queue.front()));
+            async_queue.pop();
+        }
+        if (std::holds_alternative<AsyncGraphicsJob>(*job)) {
+            CompileAsyncGraphics(std::move(std::get<AsyncGraphicsJob>(*job)));
+        } else {
+            CompileAsyncCompute(std::move(std::get<AsyncComputeJob>(*job)));
+        }
+    }
+}
+
+namespace {
+// Installs a job's owned user-data copies as this thread's UdSnapshots for the
+// duration of the background compile (see Shader::Info, vk_rasterizer.cpp).
+struct AsyncUdScope {
+    void Add(const Shader::Info* info, const std::vector<u32>& ud, const std::vector<u32>& flat,
+             VAddr pgm) {
+        if (Shader::Info::num_ud_snapshots >= Shader::Info::MaxUdSnapshots) {
+            return;
+        }
+        Shader::Info::ud_snapshots[Shader::Info::num_ud_snapshots++] = {
+            info, ud.data(), u32(ud.size()), flat.data(), u32(flat.size()), pgm};
+    }
+    ~AsyncUdScope() {
+        Shader::Info::num_ud_snapshots = 0;
+    }
+};
+} // namespace
+
+void PipelineCache::CompileAsyncGraphics(AsyncGraphicsJob job) {
+    AsyncUdScope ud;
+    for (u32 s = 0; s < MaxShaderStages; ++s) {
+        if (job.infos[s] && job.stages[s].valid) {
+            ud.Add(job.infos[s], job.stages[s].user_data, job.stages[s].flat,
+                   job.stages[s].pgm_base);
+        }
+    }
+    GraphicsPipeline::SerializationSupport sdata{};
+    auto pipeline = [&] {
+        AsyncCompileTimer timer;
+        // The VkPipelineCache object needs external sync across threads.
+        std::scoped_lock lk{pipeline_create_mutex};
+        return std::make_unique<GraphicsPipeline>(
+            instance, scheduler, desc_heap, profile, job.key, *pipeline_cache,
+            std::span<const Shader::Info*, MaxShaderStages>{job.infos},
+            std::span<const Shader::RuntimeInfo, MaxShaderStages>{job.runtime_infos},
+            job.fetch_shader, std::span<const vk::ShaderModule>{job.modules}, sdata, false);
+    }();
+    RegisterPipelineData(job.key, job.hash, sdata);
+    {
+        std::scoped_lock lk{pipelines_mutex};
+        auto [it, inserted] = graphics_pipelines.try_emplace(job.key);
+        if (inserted || !it.value()) {
+            it.value() = std::move(pipeline);
+            ++num_new_pipelines;
+        }
+        // Else: replaced meanwhile (debug shader-replace); drop ours.
+    }
+    ++async_finished;
+    ++g_bb_async_finished;
+}
+
+void PipelineCache::CompileAsyncCompute(AsyncComputeJob job) {
+    AsyncUdScope ud;
+    if (job.info && job.stage.valid) {
+        ud.Add(job.info, job.stage.user_data, job.stage.flat, job.stage.pgm_base);
+    }
+    ComputePipeline::SerializationSupport sdata{};
+    auto pipeline = [&] {
+        AsyncCompileTimer timer;
+        std::scoped_lock lk{pipeline_create_mutex};
+        return std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
+                                                 *pipeline_cache, job.key, *job.info,
+                                                 job.module, sdata, false);
+    }();
+    RegisterPipelineData(job.key, sdata);
+    {
+        std::scoped_lock lk{pipelines_mutex};
+        auto [it, inserted] = compute_pipelines.try_emplace(job.key);
+        if (inserted || !it.value()) {
+            it.value() = std::move(pipeline);
+            ++num_new_pipelines;
+        }
+    }
+    ++async_finished;
+    ++g_bb_async_finished;
+}
 
 bool PipelineCache::PrepareGraphicsPipeline(PipelineSelection& worker_sel) {
     // Tessellation stages read constant buffers from memory at selection time: not prepared.
@@ -435,8 +579,17 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
             return nullptr;
         }
     }
-    const auto it = graphics_pipelines.find(prepared.key);
-    return it != graphics_pipelines.end() ? it->second.get() : nullptr;
+    // Copy the pointer under the lock: the async worker may insert (rehash) concurrently,
+    // and the pipeline outlives the map entry for the session (except debug shader-replace).
+    const GraphicsPipeline* pipeline = nullptr;
+    {
+        std::scoped_lock lk{pipelines_mutex};
+        if (const auto it = graphics_pipelines.find(prepared.key);
+            it != graphics_pipelines.end()) {
+            pipeline = it->second.get();
+        }
+    }
+    return pipeline;
 }
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
@@ -458,7 +611,61 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (TakeBadProgram() || !refreshed || Shader::TakeSrtWalkFault()) {
         return nullptr;
     }
-    const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
+    // Debug shader-replace mode mutates the maps; keep it fully synchronous.
+    const bool collect = EmulatorSettings.IsShaderCollect();
+    if (async_enabled && !collect) {
+        // Miss path: a placeholder reserves the key, the snapshot compiles off-thread and
+        // this draw is skipped (callers already handle null). A pending key misses again
+        // without re-enqueueing; a finished one hits below.
+        std::scoped_lock lk{pipelines_mutex};
+        auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
+        if (!is_new) {
+            return it->second.get();
+        }
+        AsyncGraphicsJob job{
+            .key = sel.graphics_key,
+            .hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key),
+            .runtime_infos = sel.runtime_infos,
+            .fetch_shader = sel.fetch_shader,
+        };
+        std::ranges::copy(sel.infos, job.infos.begin());
+        std::ranges::copy(sel.modules, job.modules.begin());
+        /* Own the per-draw user data: the GPU thread rewrites the live Info for the
+         * next draw immediately after this returns. The worker installs these as
+         * thread-local UdSnapshots, so GetSharp reads this frame, not a torn one. */
+        for (u32 s = 0; s < MaxShaderStages; ++s) {
+            const Shader::Info* info = sel.infos[s];
+            if (!info) {
+                continue;
+            }
+            auto& dst = job.stages[s];
+            dst.user_data.assign(info->user_data.begin(), info->user_data.end());
+            dst.flat = info->flattened_ud_buf;
+            dst.pgm_base = info->pgm_base;
+            dst.valid = true;
+        }
+        const u64 enqueued_hash = job.hash;
+        {
+            std::scoped_lock qlk{async_queue_mutex};
+            async_queue.emplace(std::move(job));
+        }
+        async_queue_cv.notify_one();
+        ++async_enqueued;
+        ++g_bb_async_enqueued;
+        ++async_skipped;
+        ++g_bb_async_skipped;
+        std::printf("Async graphics pipeline 0x%llx enqueued\n",
+                    (unsigned long long)enqueued_hash);
+        return nullptr;
+    }
+    // Synchronous path (default): compile on the GPU thread.
+    auto [it, is_new] = [&] {
+        std::scoped_lock lk{pipelines_mutex};
+        return graphics_pipelines.try_emplace(sel.graphics_key);
+    }();
+    if (!is_new) {
+        return it->second.get();
+    }
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
@@ -499,7 +706,45 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         TakeBadProgram();
         return nullptr;
     }
-    const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
+    // Debug shader-replace mode mutates the maps; keep it fully synchronous.
+    const bool collect = EmulatorSettings.IsShaderCollect();
+    if (async_enabled && !collect) {
+        std::scoped_lock lk{pipelines_mutex};
+        auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
+        if (!is_new) {
+            return it->second.get();
+        }
+        AsyncComputeJob job{
+            .key = compute_key,
+            .hash = std::hash<ComputePipelineKey>{}(compute_key),
+            .info = sel.infos[0],
+            .module = sel.modules[0],
+        };
+        if (sel.infos[0]) {
+            job.stage.user_data.assign(sel.infos[0]->user_data.begin(),
+                                       sel.infos[0]->user_data.end());
+            job.stage.flat = sel.infos[0]->flattened_ud_buf;
+            job.stage.pgm_base = sel.infos[0]->pgm_base;
+            job.stage.valid = true;
+        }
+        const u64 enqueued_hash = job.hash;
+        {
+            std::scoped_lock qlk{async_queue_mutex};
+            async_queue.emplace(std::move(job));
+        }
+        async_queue_cv.notify_one();
+        ++async_enqueued;
+        ++g_bb_async_enqueued;
+        ++async_skipped;
+        ++g_bb_async_skipped;
+        std::printf("Async compute pipeline 0x%llx enqueued\n",
+                    (unsigned long long)enqueued_hash);
+        return nullptr;
+    }
+    auto [it, is_new] = [&] {
+        std::scoped_lock lk{pipelines_mutex};
+        return compute_pipelines.try_emplace(compute_key);
+    }();
     if (is_new) {
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
         LOG_INFO(Render_Vulkan, "Compiling compute pipeline {:#x}", pipeline_hash);
@@ -1040,6 +1285,7 @@ std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule mo
         }
     }
     if (module_related_pipelines.contains(module)) {
+        std::scoped_lock lk{pipelines_mutex};
         auto& pipeline_keys = module_related_pipelines[module];
         for (auto& key : pipeline_keys) {
             if (std::holds_alternative<GraphicsPipelineKey>(key)) {
