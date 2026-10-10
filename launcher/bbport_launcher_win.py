@@ -7,7 +7,7 @@ preset, output, effects), start-up options passed to run.py as environment varia
 (frame rate, presentation, HDR, ...), mods, third-party patches and the FSR 4 assets.
 Launcher options live in %APPDATA%/bbport-launcher/settings.json.
 
-Frozen with PyInstaller (packaging/windows/package.sh) the same Bloodborne.exe also runs the
+Frozen with PyInstaller (packaging/windows/package.sh) the same bb-runtime.exe also runs the
 game without the window (`--play`), run.py (`--run`) and the preparation scripts (`--script`),
 so a packaged port needs no Python installation. A plain start launches the game directly once
 setup is done; `--launcher` (or Shift/Ctrl held) opens the launcher and `--setup` the wizard.
@@ -2417,12 +2417,16 @@ class Launcher:
                             self.ui_calls.put(lambda p=percent: progress(p))
                 extract_update(archive, UPDATE_DIR / 'new')
                 archive.unlink()
-                new = next((p.parent for p in (UPDATE_DIR / 'new').rglob('Bloodborne.exe')), None)
-                if not new:
-                    raise OSError('Bloodborne.exe is missing from the download')
+                # The frozen runtime: bb-runtime.exe, Bloodborne.exe in packages from before
+                # the rename (old installations must still update from those).
+                names = ('bb-runtime.exe', 'Bloodborne.exe')
+                exe = next((p for name in names for p in (UPDATE_DIR / 'new').rglob(name)), None)
+                if not exe:
+                    raise OSError('bb-runtime.exe is missing from the download')
                 # The new launcher copies itself over this installation once this one has closed.
-                subprocess.Popen([str(new / 'Bloodborne.exe'), '--install-update', str(PORT_DIR), str(os.getpid())],
-                                 cwd=str(new), stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+                subprocess.Popen([str(exe), '--install-update', str(PORT_DIR), str(os.getpid())],
+                                 cwd=str(exe.parent), stdin=subprocess.DEVNULL,
+                                 creationflags=NO_WINDOW)
                 self.ui_calls.put(self.root.destroy)
             except (OSError, zipfile.BadZipFile) as failure:
                 def failed(error=failure):
@@ -2719,7 +2723,8 @@ def install_update(target, wait_pid):
             'Не удалось установить обновление. Скачайте его со страницы релизов.'), 'Bloodborne', 0x10)
         webbrowser.open(RELEASES_PAGE)
         return 1
-    subprocess.Popen([str(target / 'Bloodborne.exe')], cwd=str(target))
+    subprocess.Popen([str(next((target / name for name in ('bb-runtime.exe', 'Bloodborne.exe')
+                                    if (target / name).is_file())))], cwd=str(target))
     return 0
 
 

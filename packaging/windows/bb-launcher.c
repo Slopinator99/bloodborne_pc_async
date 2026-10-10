@@ -404,6 +404,19 @@ static int find_python(char* out, size_t n) {
     return 1;
 }
 
+/* The frozen Python runtime next to the game: bb-runtime.exe in current packages,
+ * Bloodborne.exe in older ones (accepted while players mix old and new files). */
+static void frozen_runtime(const char* dir, char* out, size_t n) {
+    static const char* names[] = {"bb-runtime.exe", "Bloodborne.exe"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        snprintf(out, n, "%s\\%s", dir, names[i]);
+        if (GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES) {
+            return;
+        }
+    }
+    snprintf(out, n, "%s\\bb-runtime.exe", dir);
+}
+
 static DWORD WINAPI watch_thread(LPVOID unused) {
     (void)unused;
     WaitForSingleObject(g_child, INFINITE);
@@ -452,17 +465,17 @@ static void on_run(void) {
         return;
     }
     save_settings();
-    /* Packaged: the frozen Bloodborne.exe next to us runs run.py itself (--run),
+    /* Packaged: the frozen runtime next to us runs run.py itself (--run),
      * so players need no Python. Dev tree: python run.py. */
     char frozen[MAX_PATH], cmd[2048];
-    snprintf(frozen, sizeof(frozen), "%s\\Bloodborne.exe", g_root);
+    frozen_runtime(g_root, frozen, sizeof(frozen));
     /* g_root is the repo root in dev (exe lives in out/); the package root is
      * where the exe lives. Check both. */
     char exedir[MAX_PATH];
     GetModuleFileNameA(NULL, exedir, sizeof(exedir));
     *strrchr(exedir, '\\') = 0;
     char frozen_here[MAX_PATH];
-    snprintf(frozen_here, sizeof(frozen_here), "%s\\Bloodborne.exe", exedir);
+    frozen_runtime(exedir, frozen_here, sizeof(frozen_here));
     const char* runner = NULL;
     if (GetFileAttributesA(frozen_here) != INVALID_FILE_ATTRIBUTES) {
         snprintf(cmd, sizeof(cmd), "\"%s\" --run", frozen_here);
@@ -480,9 +493,9 @@ static void on_run(void) {
             DWORD found = SearchPathA(NULL, "python", ".exe", sizeof(where), where, NULL);
             if (!found || strstr(where, "WindowsApps")) {
                 MessageBoxA(g_main,
-                            "No usable Python found and no packaged Bloodborne.exe.\n\n"
+                            "No usable Python found and no packaged runtime.\n\n"
                             "Developers: install Python 3.10+ or MSYS2 CLANG64 python.\n"
-                            "Players: use the packaged build (Bloodborne.exe next to this file).",
+                            "Players: use the packaged build (bb-runtime.exe next to this file).",
                             "Bloodborne", MB_OK | MB_ICONWARNING);
                 status("No Python and no packaged build.");
                 return;
@@ -491,8 +504,8 @@ static void on_run(void) {
         snprintf(cmd, sizeof(cmd), "%s \"%s\"", python, g_runpy);
         runner = python;
     } else {
-        status("run.py not found (packaged builds use Bloodborne.exe).");
-        MessageBoxA(g_main, "run.py was not found. Packaged players: use Bloodborne.exe.",
+        status("run.py not found (packaged builds use bb-runtime.exe).");
+        MessageBoxA(g_main, "run.py was not found. Packaged players: use bb-runtime.exe.",
                     "Bloodborne", MB_OK | MB_ICONWARNING);
         return;
     }

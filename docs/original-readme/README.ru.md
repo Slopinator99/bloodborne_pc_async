@@ -5,10 +5,11 @@
 [English](README.md) · **Русский**
 
 > ### Версия для Windows
-> В этом форке есть нативная сборка bbport для **Windows 10/11** с лаунчером (`Bloodborne.exe`),
-> где все настройки собраны в одном окне, на 13 языках. Готовый архив лежит в
+> В этом форке есть нативная сборка bbport для **Windows 10/11** с лаунчерами: лёгкий
+> `bb-launcher.exe` и полный `bb-runtime.exe` (обновления, языки, загрузка FSR).
+> Готовый архив лежит в
 > [Releases](https://github.com/Supermedo/bloodborne_pc/releases): распакуйте, запустите
-> `Bloodborne.exe` и укажите папку с игрой. Сборка и отличия от Linux:
+> `bb-launcher.exe` и укажите папку с игрой. Сборка и отличия от Linux:
 > [packaging/windows/README.md](packaging/windows/README.md).
 >
 > Порт для Linux и почти вся работа над ним — [deadinside28](https://github.com/deadinside28/bloodborne_pc);
