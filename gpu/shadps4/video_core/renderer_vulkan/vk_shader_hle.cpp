@@ -168,6 +168,29 @@ static bool ExecuteCopyShaderHLE(const Shader::Info& info, const AmdGpu::Compute
         copies.emplace_back(local_src_offset, local_dst_offset, local_size);
     }
 
+    // bbport: merge exactly-contiguous runs in order. Same bytes in the same order, so the
+    // result is bit-identical, but region tables shrink and more batches fall below the 8-copy
+    // vkCmdCopyBuffer path in MultiCopy. Only merged when the joined span cannot alias itself
+    // (source and destination disjoint), so overlapping copies keep sequential semantics.
+    size_t compacted = 0;
+    for (size_t i = 0; i < copies.size(); ++i) {
+        if (compacted > 0) {
+            auto& prev = copies[compacted - 1];
+            const auto& cur = copies[i];
+            const bool contiguous = prev.srcOffset + prev.size == cur.srcOffset &&
+                                    prev.dstOffset + prev.size == cur.dstOffset;
+            const u64 src_end = cur.srcOffset + cur.size;
+            const u64 dst_end = cur.dstOffset + cur.size;
+            const bool disjoint = src_end <= prev.dstOffset || dst_end <= prev.srcOffset;
+            if (contiguous && disjoint) {
+                prev.size = src_end - prev.srcOffset;
+                continue;
+            }
+        }
+        copies[compacted++] = copies[i];
+    }
+    copies.resize(compacted);
+
     // bbport: 64 KiB instead of 64 MiB. The copies are a few KiB spread over up to 57 MiB, and
     // each batch synchronizes (uploads, marks GPU-modified) its whole range: GPU time of the copy
     // shader 1.5 -> 0.6 ms/frame, GPU busy 85% -> 77%, frame rate no lower.
