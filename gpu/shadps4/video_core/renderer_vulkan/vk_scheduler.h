@@ -4,9 +4,10 @@
 #pragma once
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
-#include <cstring>
 #include <condition_variable>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -806,16 +807,34 @@ public:
     /// submission that reads them. Waits for all.
     void WaitHostCopies();
 
+    /// bbport: narrowed WaitHostCopies for a synchronous guest write to
+    /// [address, address + size): waits only if a queued host copy reads an overlapping
+    /// guest range and may still be running (WRITE_DATA/DMA stalled on unrelated small
+    /// copies otherwise). Ranges are noted at queue time (NoteHostCopySource); unknown
+    /// ranges fall back to the full wait, so skipping is always safe.
+    /// BB_RANGED_HOST_WAITS=0: the unconditional wait.
+    void WaitHostCopiesFor(u64 address, u64 size);
+
     /// Runs `copy` on the recording thread in order with the commands (the thread spins for
     /// work anyway, so small copies cost no wakeup); WaitHostCopies() covers it.
+    /// src_addr/src_size: guest range the copy reads, noted for WaitHostCopiesFor (0/0: none).
     template <typename Func>
-    void RecordHostCopy(Func&& copy) {
+    void RecordHostCopy(Func&& copy, u64 src_addr = 0, u64 src_size = 0) {
+        const u64 seq = ++host_copies_issued;
+        if (src_size != 0) {
+            NoteHostCopySource(src_addr, src_size, /*pool=*/false, seq);
+        }
         Record([copy = std::forward<Func>(copy), this,
-                seq = ++host_copies_issued](vk::CommandBuffer) {
+                seq](vk::CommandBuffer) {
             copy();
             host_copies_done.store(seq, std::memory_order_release);
         });
     }
+
+    /// Notes a queued host copy's guest source range for WaitHostCopiesFor. pool: the copy
+    /// runs on the BbCopy threads (pruned by full waits) rather than the recording thread
+    /// (pruned by its sequence). Must be called before the copy is queued.
+    void NoteHostCopySource(u64 address, u64 size, bool pool, u64 seq = 0);
 
     /// bbport: runs `signal` once the guest memory copies issued so far are done, without
     /// waiting here: the recording thread reaches it after the copies queued before it and hands
@@ -927,6 +946,22 @@ private:
     bool direct_mode = false; ///< the command buffer is recorded on the caller's thread
     u64 host_copies_issued = 0;
     std::atomic<u64> host_copies_done{0};
+    // bbport: guest source ranges of queued host copies, for WaitHostCopiesFor. Recorder
+    // entries carry their host_copies_issued sequence (pruned by the done watermark); pool
+    // entries carry a note order (pruned by full waits only). note_seq orders all entries.
+    std::mutex host_copy_sources_mutex;
+    struct HostCopySource {
+        u64 seq;
+        u64 start;
+        u64 end; // exclusive
+        bool pool;
+        u64 note;
+    };
+    std::deque<HostCopySource> host_copy_sources;
+    u64 host_copy_note_seq = 0;
+    static constexpr size_t HostCopySourceCap = 512;
+    // Erases entries a full wait covered (see .cpp). Caller holds host_copy_sources_mutex.
+    void PruneHostCopySources(u64 boundary);
     std::atomic<u64> deferred_signals_issued{0}; ///< by the thread recording (A or B)
     std::shared_ptr<std::atomic<u64>> deferred_signals_done =
         std::make_shared<std::atomic<u64>>(0);

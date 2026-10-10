@@ -225,6 +225,87 @@ void Scheduler::WaitHostCopies() {
     BbCopy::WaitAsync();
 }
 
+// Erases entries a full wait covered: recorder ranges at/below the done watermark, pool
+// ranges noted no later than boundary (their copies were queued before the wait joined
+// the pool). Caller holds host_copy_sources_mutex.
+void Scheduler::PruneHostCopySources(u64 boundary) {
+    const u64 done = host_copies_done.load(std::memory_order_acquire);
+    host_copy_sources.erase(std::remove_if(host_copy_sources.begin(), host_copy_sources.end(),
+                                           [done, boundary](const HostCopySource& e) {
+                                               return (!e.pool && e.seq <= done) ||
+                                                      (e.pool && e.note <= boundary);
+                                           }),
+                            host_copy_sources.end());
+}
+
+// BB_RANGED_HOST_WAITS=0: unconditional host-copy waits (no range tracking).
+static bool RangedHostWaits() {
+    static const bool narrowed = [] {
+        const char* env = std::getenv("BB_RANGED_HOST_WAITS");
+        return !(env && env[0] == '0');
+    }();
+    return narrowed;
+}
+
+void Scheduler::NoteHostCopySource(u64 address, u64 size, bool pool, u64 seq) {
+    if (!RangedHostWaits() || size == 0) {
+        return;
+    }
+    const u64 end = address + size;
+    if (end < address) { // Wraparound: unrepresentable below, wait unconditionally there.
+        return;
+    }
+    std::unique_lock lk{host_copy_sources_mutex};
+    for (;;) {
+        PruneHostCopySources(host_copy_note_seq);
+        if (host_copy_sources.size() < HostCopySourceCap) {
+            host_copy_sources.push_back({seq, address, end, pool, ++host_copy_note_seq});
+            return;
+        }
+        // No room: drain everything first (a bounded wait; progress is guaranteed as the
+        // recorder and pool threads consume). Never drop a range: an untracked pending
+        // copy would let a later narrowed wait skip over it.
+        lk.unlock();
+        WaitHostCopies();
+        lk.lock();
+    }
+}
+
+void Scheduler::WaitHostCopiesFor(u64 address, u64 size) {
+    u64 boundary;
+    {
+        std::scoped_lock lk{host_copy_sources_mutex};
+        if (!RangedHostWaits()) {
+            // Fall through to the full wait below.
+        } else if (size == 0) {
+            return; // Writes nothing observable.
+        } else {
+            const u64 end = address + size;
+            if (end >= address) {
+                PruneHostCopySources(host_copy_note_seq);
+                const u64 done = host_copies_done.load(std::memory_order_acquire);
+                bool overlap = false;
+                for (const auto& e : host_copy_sources) {
+                    if (!e.pool && e.seq <= done) {
+                        continue;
+                    }
+                    if (e.start < end && address < e.end) {
+                        overlap = true;
+                        break;
+                    }
+                }
+                if (!overlap) {
+                    return; // Nothing queued reads the written range: no wait.
+                }
+            }
+        }
+        boundary = host_copy_note_seq;
+    }
+    WaitHostCopies();
+    std::scoped_lock lk{host_copy_sources_mutex};
+    PruneHostCopySources(boundary);
+}
+
 void Scheduler::KickRecording(bool force) {
     if (!recording_threaded) {
         return;

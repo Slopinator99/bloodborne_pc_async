@@ -161,9 +161,10 @@ void BufferCache::RunGuestCopy(const BbCopy::Item& item) {
 // idle most of the time); PoolSmallCopies (toggle 524288) batches them for the copy threads.
 void BufferCache::SmallGuestCopy(const BbCopy::Item& item) {
     if (scheduler.IsRecordingDeferred() && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
-        scheduler.RecordHostCopy([item] { item.run(item); });
+        scheduler.RecordHostCopy([item] { item.run(item); }, item.source, item.size);
         return;
     }
+    scheduler.NoteHostCopySource(item.source, item.size, /*pool=*/true);
     BbCopy::QueueCopy(item);
 }
 

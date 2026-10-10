@@ -91,6 +91,12 @@ public:
         DrainDrawPipe();
         scheduler.WaitHostCopies();
     }
+    /// GPU thread, before a synchronous guest write to [address, address + size): waits
+    /// only for queued host copies reading that range (see Scheduler::WaitHostCopiesFor).
+    void WaitHostCopiesFor(VAddr address, u64 size) {
+        DrainDrawPipe();
+        scheduler.WaitHostCopiesFor(address, size);
+    }
 
     /// bbport: GPU command thread: waits until the draw recording thread has recorded every
     /// draw handed to it (vk_draw_pipe.h); no-op on other threads.
