@@ -44,7 +44,8 @@ def host_nvidia(manifest_dirs, library_dirs):
                 continue
             if "nvidia" not in library.name.lower():
                 continue
-            if library.is_absolute():
+            # Manifests use POSIX paths; on Windows a leading / is not "absolute".
+            if library.is_absolute() or library.as_posix().startswith("/"):
                 candidates = [library, *(d / library.name for d in library_dirs)]
             elif len(library.parts) > 1:
                 candidates = [manifest.parent / library]
@@ -63,7 +64,7 @@ def configure(env, manifest_dirs=MANIFEST_DIRS, library_dirs=LIBRARY_DIRS):
         return "Vulkan: using explicit driver override"
     bundled = env.get("BB_BUNDLED_VK_DRIVER_FILES", "")
     if env.get("VK_ADD_DRIVER_FILES"):
-        bundled = env["VK_ADD_DRIVER_FILES"] + (":" + bundled if bundled else "")
+        bundled = env["VK_ADD_DRIVER_FILES"] + (os.pathsep + bundled if bundled else "")
     extra = env.get("BB_NVIDIA_LIB_DIR")
     if extra:
         library_dirs = (Path(extra), *library_dirs)
@@ -101,9 +102,9 @@ def configure(env, manifest_dirs=MANIFEST_DIRS, library_dirs=LIBRARY_DIRS):
     temporary = cache / f"nvidia_icd.{os.getpid()}.tmp"
     temporary.write_text(json.dumps(data, indent=2) + "\n", encoding='utf-8')
     temporary.replace(manifest)
-    env["VK_DRIVER_FILES"] = str(manifest) + (":" + bundled if bundled else "")
+    env["VK_DRIVER_FILES"] = str(manifest) + (os.pathsep + bundled if bundled else "")
     env["LD_LIBRARY_PATH"] = str(libraries) + (
-        ":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+        os.pathsep + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
     return f"Vulkan: host NVIDIA driver {driver}; bundled AMD/Intel also available"
 
 

@@ -2,6 +2,7 @@
 from paths import ROOT
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -61,14 +62,15 @@ class PackagedVulkanTests(unittest.TestCase):
         self.library("libc.so.6")
         self.manifest()
         self.assertIn("host NVIDIA", self.configure())
-        driver_json = Path(self.env["VK_DRIVER_FILES"].split(":")[0])
+        driver_json = Path(self.env["VK_DRIVER_FILES"].split(os.pathsep)[0])
         data = json.loads(driver_json.read_text())
         self.assertEqual(data["ICD"]["api_version"], "1.3.0")
         self.assertEqual(Path(data["ICD"]["library_path"]).resolve(), driver)
-        cache = Path(self.env["LD_LIBRARY_PATH"].split(":")[0])
+        cache = Path(self.env["LD_LIBRARY_PATH"].split(os.pathsep)[0])
         self.assertEqual((cache / compiler.name).resolve(), compiler)
         self.assertFalse((cache / "libc.so.6").exists())
-        self.assertTrue(self.env["VK_DRIVER_FILES"].endswith(":/bundled/radeon.json:/bundled/intel.json"))
+        self.assertTrue(self.env["VK_DRIVER_FILES"].endswith(
+            os.pathsep + "/bundled/radeon.json:/bundled/intel.json"))
         # Repeated starts reuse valid links and do not accumulate per-launch caches.
         before = dict(self.env)
         self.env = {k: v for k, v in before.items() if k != "VK_DRIVER_FILES"}
@@ -95,7 +97,7 @@ class PackagedVulkanTests(unittest.TestCase):
         self.env["VK_ADD_DRIVER_FILES"] = "/user/extra.json"
         self.configure()
         self.assertEqual(self.env["VK_DRIVER_FILES"],
-                         "/user/extra.json:/bundled/radeon.json:/bundled/intel.json")
+                         "/user/extra.json" + os.pathsep + "/bundled/radeon.json:/bundled/intel.json")
 
     def test_host_driver_can_be_supplied_outside_hidden_nix_store(self):
         self.library("libGLX_nvidia.so.0")
