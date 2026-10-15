@@ -232,8 +232,10 @@ static void load_settings(void) {
     set_check(ID_FULLSCREEN, atoi(v) != 0);
     ini_get("launcher_user_dir", v, sizeof(v), "");
     set_text(ID_USER_EDIT, v);
-    set_check(ID_ASYNC, 0);
-    set_check(ID_STATS, 0);
+    ini_get("launcher_async", v, sizeof(v), "0");
+    set_check(ID_ASYNC, atoi(v) != 0);
+    ini_get("launcher_stats", v, sizeof(v), "1");
+    set_check(ID_STATS, atoi(v) != 0);
     /* Tabs. */
     for (int i = 0; i < 7; ++i) {
         char d[4];
@@ -277,7 +279,8 @@ static int is_managed(const char* line) {
                                  "launcher_user_dir", "launcher_fps", "launcher_fullscreen",
                                  "launcher_mods_on", "launcher_mods_dir", "launcher_patches_dir",
                                  "launcher_present", "launcher_draw_pipe",
-                                 "launcher_readbacks", "launcher_ahead", "launcher_cap"};
+                                 "launcher_readbacks", "launcher_ahead", "launcher_cap",
+                                 "launcher_async", "launcher_stats"};
     for (int i = 0; i < 7; ++i) {
         size_t k = strlen(kFx[i].key);
         if (!strncmp(line, kFx[i].key, k) && line[k] == '=') return 1;
@@ -354,10 +357,11 @@ static void save_settings(void) {
                "launcher_present=%s\nlauncher_draw_pipe=%s\nlauncher_readbacks=%s\n"
                "launcher_ahead=%s\nlauncher_cap=%s\n"
                "launcher_game_dir=%s\nlauncher_user_dir=%s\nlauncher_fps=%s\n"
-               "launcher_fullscreen=%d\n%s",
+               "launcher_fullscreen=%d\nlauncher_async=%d\nlauncher_stats=%d\n%s",
             mods_on, mods, patches, pr >= 0 ? kPresent[pr] : "Mailbox", dp > 0 ? kPipe[dp] : "",
             rb > 0 ? kRb[rb] : "", ah > 0 ? kAhead[ah] : "", cp > 0 ? kCaps[cp] : "", game,
-            user, kFps[fi], get_check(ID_FULLSCREEN), rest);
+            user, kFps[fi], get_check(ID_FULLSCREEN), get_check(ID_ASYNC), get_check(ID_STATS),
+            rest);
     fclose(f);
 
     SetEnvironmentVariableA("BB_GAME_DIR", game);

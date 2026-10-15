@@ -26,3 +26,19 @@ patches.json
 !launcher/bloodborne.png
 # Player mods folder for source runs (packages take the Xbox prompts from packaging/windows/mods)
 /mods/
+
+# IDE/session-local
+.claude/
+.vscode/
+
+# Local Windows working-tree artifacts: dumps, prebuilt binaries, hotfix bundles, logs, test profiles
+/CUSA03173-*
+/cache-POISONED-*/
+/bbport-build-*.7z*
+/bb-launcher-fix*
+/bb-probe-instr.exe
+/dll-hotfix-*
+/hotfix-*
+/README-TRANSFER.txt
+/user-*/
+/*.log
