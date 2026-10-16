@@ -1,7 +1,11 @@
 /* bb-launcher: classic native launcher for bbport (Windows).
- * Plain Win32, no frameworks: game folder, upscaler/preset/output/FPS, checkboxes,
- * Run + Advanced. Advanced shows the full settings in tabs (effects, gameplay,
- * mods, performance). Writes bbport.ini and starts run.py.
+ * Plain Win32, no frameworks: one tabbed window with every setting, Run and Save.
+ * Pages are described by one field table (g_fields); creating, loading, saving and the
+ * environment handed to the game all walk that table.
+ *
+ * Two stores, both shared with bb-runtime (the Python launcher):
+ *   bbport.ini                                  game settings (the in-game menu edits them too)
+ *   %APPDATA%\bbport-launcher\settings.json     launcher options (bb-settings.h)
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -13,94 +17,189 @@
 
 #include "bb-settings.h"
 
-#define ID_GAME_EDIT 101
-#define ID_BROWSE 102
-#define ID_UPSCALER 103
-#define ID_PRESET 104
-#define ID_OUTPUT 105
-#define ID_FPS 106
-#define ID_FULLSCREEN 107
-#define ID_SKIP_INTRO 108
-#define ID_ASYNC 109
-#define ID_STATS 110
-#define ID_FPS_SHOW 111
 #define ID_RUN 112
-#define ID_ADVANCED 113
-#define ID_USER_EDIT 114
-#define ID_ENV_EDIT 115
+#define ID_SAVE 113
 #define ID_STATUS 116
 #define ID_TABS 117
-#define ID_USER_LBL 118
-#define ID_ENV_LBL 119
-/* Tab page controls start here (created per page, ids must stay unique). */
-#define ID_FX_BASE 200
-#define ID_GP_BASE 230
-#define ID_MODS_ON 260
-#define ID_MODS_EDIT 261
-#define ID_PATCH_EDIT 262
-#define ID_PRESENT 263
-#define ID_DRAWPIPE 264
-#define ID_READBACKS 265
-#define ID_AHEAD 266
-#define ID_CAP 267
-#define ID_USER_BROWSE 268
-#define ID_MODS_BROWSE 269
-#define ID_PATCH_BROWSE 270
+#define ID_GAME_NOTE 120
+#define ID_FIELD_BASE 1000  /* field i: control 1000+i */
+#define ID_BROWSE_BASE 2000 /* folder field i: browse button 2000+i */
+#define ID_VALUE_BASE 3000  /* slider field i: value text 3000+i */
 
-static const char* kUpscalers[] = {"taa", "fsr3", "fsr4", "fsr411", "off"};
-static const char* kUpscalerLabels[] = {"TAA (native)", "FSR 3.1", "FSR 4", "FSR 4.1.1", "Off"};
-static const char* kPresets[] = {"Native AA (x1.0)", "Quality (x1.5)", "Balanced (x1.7)",
-                                 "Performance (x2.0)", "Ultra Performance (x3.0)"};
-static const char* kOutputs[] = {"1280x720", "1920x1080", "2560x1440", "3840x2160"};
-static const char* kFps[] = {"uncap", "60", "90", "30"};
-static const char* kFpsLabels[] = {"Unlocked", "60 FPS", "90 FPS", "30 FPS (PS4)"};
-static const char* kPresent[] = {"Mailbox", "Fifo", "FifoRelaxed", "Immediate"};
-static const char* kPipe[] = {"", "1", "0"};
-static const char* kPipeLabels[] = {"Auto (8+ threads)", "On", "Off (stable)"};
-static const char* kRb[] = {"", "0", "2"};
-static const char* kRbLabels[] = {"Relaxed (default)", "Off", "Precise"};
-static const char* kAhead[] = {"", "2", "0"};
-static const char* kAheadLabels[] = {"1 (default)", "2", "Unbounded"};
-static const char* kCaps[] = {"", "60", "90", "120", "144", "0"};
-static const char* kCapLabels[] = {"Auto (max 120)", "60", "90", "120", "144", "No limit"};
+/* Layout, in unscaled pixels (S() applies the DPI). */
+#define WIN_W 556
+#define WIN_H 604
+#define TABS_X 10
+#define TABS_Y 54
+#define TABS_W 536
+#define TABS_H 470
+#define PAGE_W 512
+#define LABEL_X 12
+#define LABEL_W 158
+#define CTRL_X 176
+#define CTRL_W 320
 
-/* Effects tab (real bbport.ini keys, defaults = game behaviour). */
-static const struct { const char* key; const char* label; int dflt; } kFx[] = {
-    {"effect_chromatic_aberration", "Chromatic aberration", 1},
-    {"effect_dof", "Depth of field (DoF)", 1},
-    {"effect_motion_blur", "Motion blur", 1},
-    {"effect_ssao", "Ambient occlusion (SSAO)", 1},
-    {"effect_dynamic_shadows", "Dynamic light shadows", 1},
-    {"effect_game_aa", "The game's own AA (off w/ TAA)", 0},
-    {"effect_ssr", "Screen-space reflections", 0},
+/* --- option lists: stored value + shown text, the same values bb-runtime stores --- */
+static const char* kUpscalerV[] = {"dlss", "fsr4", "fsr411", "fsr3", "taa", "off"};
+static const char* kUpscalerL[] = {"DLSS (NVIDIA GeForce RTX)", "FSR 4 (best quality)",
+                                   "FSR 4.1.1 (needs fsr4_411 assets)", "FSR 3.1 (every GPU)",
+                                   "TAA (native resolution anti-aliasing)", "Off"};
+static const char* kPresetV[] = {"0", "1", "2", "3", "4"};
+static const char* kPresetL[] = {"Native AA (x1.0)", "Quality (x1.5)", "Balanced (x1.7)",
+                                 "Performance (x2)", "Ultra Performance (x3)"};
+static const char* kOutputV[] = {"1280x720",  "1920x1080", "2560x1440", "3840x2160", "2560x1080",
+                                 "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440"};
+static const char* kOutputL[] = {"1280 x 720 (Steam Deck)", "1920 x 1080",        "2560 x 1440",
+                                 "3840 x 2160 (4K)",         "2560 x 1080 (21:9)", "3440 x 1440 (21:9)",
+                                 "3840 x 1600 (21:9)",       "5120 x 2160 (21:9)", "3840 x 1080 (32:9)",
+                                 "5120 x 1440 (32:9)"};
+static const char* kHudV[] = {"100", "75", "50", "25", "0"};
+static const char* kHudL[] = {"Screen edges", "75%", "Halfway", "25%", "Centred (16:9)"};
+static const char* kLiveV[] = {"auto", "0", "1"};
+static const char* kLiveL[] = {"Auto (by graphics card)", "Off (faster)", "On (change without restarting)"};
+static const char* kLodV[] = {"0", "-2", "1", "2"};
+static const char* kLodL[] = {"As in the game", "Highest (-2)", "Lower (1)", "Lowest (2)"};
+static const char* kFpsV[] = {"uncap", "60", "90", "30"};
+static const char* kFpsL[] = {"Unlocked (frame-time patch)", "60 FPS", "90 FPS", "30 FPS (as on PS4)"};
+static const char* kCapV[] = {"", "60", "90", "120", "144", "165", "240", "0"};
+static const char* kCapL[] = {"Auto: display refresh, max 120 (recommended)", "60", "90", "120",
+                              "144 (risky)", "165 (risky)", "240 (risky)", "No limit (risky)"};
+static const char* kAheadV[] = {"", "2", "0"};
+static const char* kAheadL[] = {"1 (default)", "2", "Unbounded"};
+static const char* kPresentV[] = {"Mailbox", "Fifo", "FifoRelaxed", "Immediate"};
+static const char* kPresentL[] = {"Mailbox (low latency, no tearing)", "FIFO (VSync)", "FIFO Relaxed",
+                                  "Immediate (tearing)"};
+static const char* kLangV[] = {"1", "8", "0", "2", "3", "4", "5", "17"};
+static const char* kLangL[] = {"English", "Russian", "Japanese", "French", "Spanish", "German",
+                               "Italian", "Portugu\xc3\xaas (Brasil)"};
+static const char* kVoiceV[] = {"auto", "eng", "ptb", "ded", "esa", "ese", "frf", "iti", "jaj"};
+static const char* kVoiceL[] = {"As in the game", "English", "Portugu\xc3\xaas (Brasil)", "Deutsch",
+                                "Espa\xc3\xb1ol (Am\xc3\xa9rica)", "Espa\xc3\xb1ol (Espa\xc3\xb1" "a)",
+                                "Fran\xc3\xa7" "ais", "Italiano", "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"};
+static const char* kDrawPipeV[] = {"", "1", "0"};
+static const char* kDrawPipeL[] = {"Auto (8+ threads)", "On", "Off (more stable)"};
+static const char* kReadbackV[] = {"", "0", "2"};
+static const char* kReadbackL[] = {"Relaxed (default)", "Off", "Precise"};
+
+/* --- the field table --- */
+enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER };
+enum { ST_INI, ST_APP };
+enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_MODS, PG_ADV, PG_COUNT };
+static const char* kPageNames[PG_COUNT] = {"Play", "Graphics", "Display", "Game",
+                                           "Cheats", "Mods", "Advanced"};
+
+typedef struct {
+    int page, kind, store;
+    const char* key;
+    const char* legacy; /* launcher_* key older versions kept in bbport.ini (ST_APP fallback) */
+    const char* label;
+    const char* const* values;
+    const char* const* labels;
+    int n;
+    const char* dflt;
+    int id;
+    HWND hwnd;
+} Field;
+
+#define FLD_HEAD(pg, label) {pg, K_HEAD, 0, "", "", label, NULL, NULL, 0, "", 0, NULL}
+#define FLD_CHECK(pg, st, key, legacy, label, dflt) \
+    {pg, K_CHECK, st, key, legacy, label, NULL, NULL, 0, dflt, 0, NULL}
+#define FLD_COMBO(pg, st, key, legacy, label, V, L, dflt) \
+    {pg, K_COMBO, st, key, legacy, label, V, L, (int)(sizeof(V) / sizeof((V)[0])), dflt, 0, NULL}
+#define FLD_TEXT(pg, st, key, label, dflt) {pg, K_TEXT, st, key, "", label, NULL, NULL, 0, dflt, 0, NULL}
+#define FLD_FOLDER(pg, st, key, legacy, label) \
+    {pg, K_FOLDER, st, key, legacy, label, NULL, NULL, 0, "", 0, NULL}
+#define FLD_SLIDER(pg, st, key, label, dflt) {pg, K_SLIDER, st, key, "", label, NULL, NULL, 0, dflt, 0, NULL}
+
+static Field g_fields[] = {
+    /* Play */
+    FLD_FOLDER(PG_PLAY, ST_APP, "game_dir", "launcher_game_dir", "Game folder:"),
+    FLD_COMBO(PG_PLAY, ST_INI, "upscaler", "", "Upscaler:", kUpscalerV, kUpscalerL, "taa"),
+    FLD_COMBO(PG_PLAY, ST_INI, "preset", "", "Quality preset:", kPresetV, kPresetL, "0"),
+    FLD_COMBO(PG_PLAY, ST_INI, "output_res", "", "Output resolution:", kOutputV, kOutputL, "1920x1080"),
+    FLD_COMBO(PG_PLAY, ST_APP, "fps_mode", "launcher_fps", "Frame rate:", kFpsV, kFpsL, "60"),
+    FLD_CHECK(PG_PLAY, ST_APP, "fullscreen", "launcher_fullscreen", "Run in full screen", "0"),
+    FLD_CHECK(PG_PLAY, ST_INI, "skip_intro", "", "Skip the intro logos and movie", "1"),
+    FLD_CHECK(PG_PLAY, ST_INI, "show_fps", "", "Show the FPS counter in the game", "1"),
+    /* Graphics */
+    FLD_COMBO(PG_GRAPHICS, ST_INI, "hud_position", "", "HUD position (21:9):", kHudV, kHudL, "100"),
+    FLD_COMBO(PG_GRAPHICS, ST_INI, "live_resolution", "", "Live resolution:", kLiveV, kLiveL, "auto"),
+    FLD_CHECK(PG_GRAPHICS, ST_INI, "sharpen", "", "Sharpening (RCAS)", "1"),
+    FLD_SLIDER(PG_GRAPHICS, ST_INI, "sharpness", "Sharpness:", "0.50"),
+    FLD_CHECK(PG_GRAPHICS, ST_INI, "object_motion", "", "Object motion vectors (about 10% FPS)", "1"),
+    FLD_COMBO(PG_GRAPHICS, ST_INI, "model_lod", "", "Model detail (LOD):", kLodV, kLodL, "0"),
+    /* Display */
+    FLD_COMBO(PG_DISPLAY, ST_APP, "frame_cap", "launcher_cap", "Frame cap (unlocked):", kCapV, kCapL, ""),
+    FLD_COMBO(PG_DISPLAY, ST_APP, "frames_ahead", "launcher_ahead", "Frames ahead of the GPU:", kAheadV,
+          kAheadL, ""),
+    FLD_COMBO(PG_DISPLAY, ST_APP, "present_mode", "launcher_present", "Presentation:", kPresentV,
+          kPresentL, "Mailbox"),
+    FLD_CHECK(PG_DISPLAY, ST_APP, "hdr", "", "Allow HDR output", "0"),
+    /* Game */
+    FLD_FOLDER(PG_GAME, ST_APP, "user_dir", "launcher_user_dir", "Saves folder:"),
+    FLD_FOLDER(PG_GAME, ST_APP, "dlc_dir", "", "DLC folder:"),
+    FLD_COMBO(PG_GAME, ST_APP, "language", "", "Text language:", kLangV, kLangL, "1"),
+    FLD_COMBO(PG_GAME, ST_APP, "voice_language", "", "Voice language:", kVoiceV, kVoiceL, "auto"),
+    FLD_TEXT(PG_GAME, ST_APP, "player_name", "Player name:", ""),
+    FLD_HEAD(PG_GAME, "Effects"),
+    FLD_CHECK(PG_GAME, ST_INI, "effect_chromatic_aberration", "", "Chromatic aberration", "1"),
+    FLD_CHECK(PG_GAME, ST_INI, "effect_dof", "", "Depth of field", "1"),
+    FLD_CHECK(PG_GAME, ST_INI, "effect_motion_blur", "", "Motion blur", "1"),
+    FLD_CHECK(PG_GAME, ST_INI, "effect_ssao", "", "Ambient occlusion (SSAO)", "1"),
+    FLD_CHECK(PG_GAME, ST_INI, "effect_game_aa", "", "The game's own anti-aliasing", "0"),
+    FLD_CHECK(PG_GAME, ST_INI, "effect_dynamic_shadows", "", "Shadows of dynamic lights", "1"),
+    FLD_CHECK(PG_GAME, ST_INI, "effect_ssr", "", "Screen-space reflections (not in the original)", "0"),
+    /* Cheats */
+    FLD_HEAD(PG_CHEATS, "Extras"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "debug_camera", "", "Free camera (hold Cross + L3; keyboard Space + Z)", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "debug_menu", "", "Game debug menu (needs the debug fonts)", "0"),
+    FLD_HEAD(PG_CHEATS, "Cheats (game version 1.09)"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "cheat_no_death", "", "Never die (health stops at 1 HP)", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "cheat_stealth", "", "Enemies do not see you (unless attacked)", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "cheat_silent", "", "Enemies do not hear you", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "cheat_rally_no_decay", "", "Rally never fades", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "cheat_enemy_control", "", "Control the targeted enemy (R3)", "0"),
+    FLD_HEAD(PG_CHEATS, "Gameplay tweaks"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "tweak_no_rally", "", "No Rally (hits do not give health back)", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "tweak_camera_distance", "", "Camera further from the character", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "tweak_no_camera_rotation", "", "No camera auto-rotation while moving", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "tweak_easy_run", "", "Run with less stick tilt (about 70%)", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "tweak_ragdoll", "", "Dark Souls-style ragdoll physics", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "tweak_circle_confirm", "", "Japanese buttons: Circle confirms, Cross dodges", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "quit_to_desktop", "", "Quit to Desktop in the title and System menus", "1"),
+    /* Mods */
+    FLD_CHECK(PG_MODS, ST_APP, "mods_enabled", "launcher_mods_on", "Enable loose-file mods", "1"),
+    FLD_FOLDER(PG_MODS, ST_APP, "mods_dir", "launcher_mods_dir", "Mods folder:"),
+    FLD_FOLDER(PG_MODS, ST_APP, "patches_dir", "launcher_patches_dir", "Extra patches folder:"),
+    /* Advanced */
+    FLD_COMBO(PG_ADV, ST_APP, "draw_pipe", "launcher_draw_pipe", "GPU draw pipe:", kDrawPipeV, kDrawPipeL, ""),
+    FLD_COMBO(PG_ADV, ST_APP, "readbacks", "launcher_readbacks", "GPU readbacks:", kReadbackV, kReadbackL, ""),
+    FLD_CHECK(PG_ADV, ST_APP, "async_pipelines", "launcher_async", "Async pipeline compilation (experimental)", "0"),
+    FLD_CHECK(PG_ADV, ST_APP, "frame_stats", "launcher_stats", "Frame statistics + GPU profile in the log", "1"),
+    FLD_CHECK(PG_ADV, ST_APP, "vk_validation", "", "Vulkan validation layers (slow)", "0"),
+    FLD_TEXT(PG_ADV, ST_APP, "extra_env", "Extra environment:", ""),
 };
-/* Gameplay tab. */
-static const struct { const char* key; const char* label; int dflt; } kGp[] = {
-    {"debug_camera", "Free camera (Cross + L3)", 0},
-    {"debug_menu", "Game debug menu (needs fonts)", 0},
-    {"cheat_no_death", "Never die (1 HP)", 0},
-    {"cheat_stealth", "Enemies blind (unless hit)", 0},
-    {"cheat_silent", "Enemies deaf", 0},
-    {"cheat_rally_no_decay", "Rally never fades", 0},
-    {"cheat_enemy_control", "Control enemy (R3)", 0},
-    {"tweak_no_rally", "No rally HP return", 0},
-    {"tweak_camera_distance", "Camera farther", 0},
-    {"tweak_no_camera_rotation", "No camera auto-turn", 0},
-    {"tweak_easy_run", "Easier run (stick)", 0},
-    {"tweak_ragdoll", "Souls-like ragdolls", 0},
-};
+#define NFIELDS ((int)(sizeof(g_fields) / sizeof(g_fields[0])))
+
+/* Older versions of this launcher kept their options as launcher_* keys in bbport.ini. They are
+ * read as a fallback (the legacy column above) and dropped from the file on the next save. */
+static const char* kLegacyKeys[] = {
+    "launcher_game_dir", "launcher_user_dir",  "launcher_fps",       "launcher_fullscreen",
+    "launcher_mods_on",  "launcher_mods_dir",  "launcher_patches_dir", "launcher_present",
+    "launcher_draw_pipe", "launcher_readbacks", "launcher_ahead",     "launcher_cap",
+    "launcher_async",    "launcher_stats"};
 
 static HWND g_main, g_status, g_tabs;
-static HWND g_pages[4];
+static HWND g_pages[PG_COUNT];
 static char g_root[MAX_PATH];
 static char g_ini[MAX_PATH];
 static char g_runpy[MAX_PATH];
-static int g_advanced, g_running;
+static int g_running;
 static HANDLE g_child;
 /* DPI scaling: every layout pixel goes through S(). The window declares
  * PerMonitorV2, so on 125/150% displays fixed pixels would overlap. */
 static int g_dpi = 96;
-static HFONT g_font;
+static HFONT g_font, g_bold;
 static int S(int v) {
     return (v * g_dpi + 48) / 96;
 }
@@ -121,9 +220,9 @@ static HWND w_edit(HWND p, int id, int x, int y, int w) {
     return h;
 }
 
-static HWND w_combo(HWND p, int id, int x, int y, int w, const char** items, int n) {
-    HWND h = CreateWindowA("COMBOBOX", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
-                           S(x), S(y), S(w), S(160), p, (HMENU)(INT_PTR)id, NULL, NULL);
+static HWND w_combo(HWND p, int id, int x, int y, int w, const char* const* items, int n) {
+    HWND h = CreateWindowA("COMBOBOX", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST |
+                           WS_VSCROLL, S(x), S(y), S(w), S(240), p, (HMENU)(INT_PTR)id, NULL, NULL);
     SendMessageA(h, WM_SETFONT, (WPARAM)g_font, 1);
     for (int i = 0; i < n; ++i) SendMessageA(h, CB_ADDSTRING, 0, (LPARAM)items[i]);
     return h;
@@ -143,34 +242,6 @@ static HWND w_button(HWND p, int id, const char* t, int x, int y, int wd, int ht
                            S(wd), S(ht), p, (HMENU)(INT_PTR)id, NULL, NULL);
     SendMessageA(h, WM_SETFONT, (WPARAM)g_font, 1);
     return h;
-}
-
-static void set_text(int id, const char* s) {
-    SetWindowTextA(GetDlgItem(g_main, id), s);
-}
-
-static void get_text(int id, char* out, size_t n) {
-    GetWindowTextA(GetDlgItem(g_main, id), out, (int)n);
-}
-
-static void page_get(HWND page, int id, char* out, size_t n) {
-    GetWindowTextA(GetDlgItem(page, id), out, (int)n);
-}
-
-static void set_combo(int id, int i) {
-    SendMessageA(GetDlgItem(g_main, id), CB_SETCURSEL, (WPARAM)(i < 0 ? 0 : i), 0);
-}
-
-static int get_combo(int id) {
-    return (int)SendMessageA(GetDlgItem(g_main, id), CB_GETCURSEL, 0, 0);
-}
-
-static void set_check(int id, int on) {
-    SendMessageA(GetDlgItem(g_main, id), BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
-}
-
-static int get_check(int id) {
-    return SendMessageA(GetDlgItem(g_main, id), BM_GETCHECK, 0, 0) == BST_CHECKED;
 }
 
 static void status(const char* s) {
@@ -203,162 +274,117 @@ static void app_get(const char* key, const char* legacy, char* out, size_t n, co
     else snprintf(out, n, "%s", dflt);
 }
 
-static int combo_index(const char** vals, int n, const char* v, int dflt) {
-    for (int i = 0; i < n; ++i)
-        if (!strcmp(v, vals[i])) return i;
-    return dflt;
-}
-
-static void load_settings(void) {
-    char v[512], game[MAX_PATH];
-    /* Remembered folder first; fall back to a CUSA03173 next to the checkout. */
-    app_get("game_dir", "launcher_game_dir", game, sizeof(game), "");
-    DWORD attrs = GetFileAttributesA(game);
-    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-        snprintf(game, sizeof(game), "%s\\..\\CUSA03173", g_root);
-        char norm[MAX_PATH];
-        GetFullPathNameA(game, sizeof(norm), norm, NULL);
-        attrs = GetFileAttributesA(norm);
-        if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY))
-            snprintf(norm, sizeof(norm), "%s", g_root);
-        snprintf(game, sizeof(game), "%s", norm);
-    }
-    set_text(ID_GAME_EDIT, game);
-
-    ini_get("upscaler", v, sizeof(v), "taa");
-    set_combo(ID_UPSCALER, combo_index(kUpscalers, 5, v, 0));
-    ini_get("preset", v, sizeof(v), "0");
-    int p = atoi(v);
-    set_combo(ID_PRESET, (p < 0 || p > 4) ? 0 : p);
-    ini_get("output_res", v, sizeof(v), "1920x1080");
-    set_combo(ID_OUTPUT, combo_index(kOutputs, 4, v, 1));
-    app_get("fps_mode", "launcher_fps", v, sizeof(v), "60");
-    set_combo(ID_FPS, combo_index(kFps, 4, v, 1));
-    ini_get("skip_intro", v, sizeof(v), "1");
-    set_check(ID_SKIP_INTRO, atoi(v) != 0);
-    ini_get("show_fps", v, sizeof(v), "1");
-    set_check(ID_FPS_SHOW, atoi(v) != 0);
-    app_get("fullscreen", "launcher_fullscreen", v, sizeof(v), "0");
-    set_check(ID_FULLSCREEN, atoi(v) != 0);
-    app_get("user_dir", "launcher_user_dir", v, sizeof(v), "");
-    set_text(ID_USER_EDIT, v);
-    app_get("async_pipelines", "launcher_async", v, sizeof(v), "0");
-    set_check(ID_ASYNC, atoi(v) != 0);
-    app_get("frame_stats", "launcher_stats", v, sizeof(v), "1");
-    set_check(ID_STATS, atoi(v) != 0);
-    app_get("extra_env", "", v, sizeof(v), "");
-    set_text(ID_ENV_EDIT, v);
-    /* Tabs. */
-    for (int i = 0; i < 7; ++i) {
-        char d[4];
-        snprintf(d, sizeof(d), "%d", kFx[i].dflt);
-        ini_get(kFx[i].key, v, sizeof(v), d);
-        SendMessageA(GetDlgItem(g_pages[0], ID_FX_BASE + i), BM_SETCHECK,
-                     atoi(v) ? BST_CHECKED : BST_UNCHECKED, 0);
-    }
-    for (int i = 0; i < 12; ++i) {
-        ini_get(kGp[i].key, v, sizeof(v), "0");
-        SendMessageA(GetDlgItem(g_pages[1], ID_GP_BASE + i), BM_SETCHECK,
-                     atoi(v) ? BST_CHECKED : BST_UNCHECKED, 0);
-    }
-    app_get("mods_enabled", "launcher_mods_on", v, sizeof(v), "1");
-    SendMessageA(GetDlgItem(g_pages[2], ID_MODS_ON), BM_SETCHECK,
-                 atoi(v) ? BST_CHECKED : BST_UNCHECKED, 0);
-    app_get("mods_dir", "launcher_mods_dir", v, sizeof(v), "");
-    SetWindowTextA(GetDlgItem(g_pages[2], ID_MODS_EDIT), v);
-    app_get("patches_dir", "launcher_patches_dir", v, sizeof(v), "");
-    SetWindowTextA(GetDlgItem(g_pages[2], ID_PATCH_EDIT), v);
-    app_get("present_mode", "launcher_present", v, sizeof(v), "Mailbox");
-    SendMessageA(GetDlgItem(g_pages[3], ID_PRESENT), CB_SETCURSEL,
-                 (WPARAM)combo_index(kPresent, 4, v, 0), 0);
-    app_get("draw_pipe", "launcher_draw_pipe", v, sizeof(v), "");
-    SendMessageA(GetDlgItem(g_pages[3], ID_DRAWPIPE), CB_SETCURSEL,
-                 (WPARAM)combo_index(kPipe, 3, v, 0), 0);
-    app_get("readbacks", "launcher_readbacks", v, sizeof(v), "");
-    SendMessageA(GetDlgItem(g_pages[3], ID_READBACKS), CB_SETCURSEL,
-                 (WPARAM)combo_index(kRb, 3, v, 0), 0);
-    app_get("frames_ahead", "launcher_ahead", v, sizeof(v), "");
-    SendMessageA(GetDlgItem(g_pages[3], ID_AHEAD), CB_SETCURSEL,
-                 (WPARAM)combo_index(kAhead, 3, v, 0), 0);
-    app_get("frame_cap", "launcher_cap", v, sizeof(v), "");
-    SendMessageA(GetDlgItem(g_pages[3], ID_CAP), CB_SETCURSEL,
-                 (WPARAM)combo_index(kCaps, 6, v, 0), 0);
-}
-
 static int is_managed(const char* line) {
-    static const char* keys[] = {"upscaler", "preset", "output_res", "effect_game_aa",
-                                 "skip_intro", "show_fps", "launcher_game_dir",
-                                 "launcher_user_dir", "launcher_fps", "launcher_fullscreen",
-                                 "launcher_mods_on", "launcher_mods_dir", "launcher_patches_dir",
-                                 "launcher_present", "launcher_draw_pipe",
-                                 "launcher_readbacks", "launcher_ahead", "launcher_cap",
-                                 "launcher_async", "launcher_stats"};
-    for (int i = 0; i < 7; ++i) {
-        size_t k = strlen(kFx[i].key);
-        if (!strncmp(line, kFx[i].key, k) && line[k] == '=') return 1;
+    for (int i = 0; i < NFIELDS; ++i) {
+        if (g_fields[i].store != ST_INI || g_fields[i].kind == K_HEAD) continue;
+        size_t k = strlen(g_fields[i].key);
+        if (!strncmp(line, g_fields[i].key, k) && line[k] == '=') return 1;
     }
-    for (int i = 0; i < 12; ++i) {
-        size_t k = strlen(kGp[i].key);
-        if (!strncmp(line, kGp[i].key, k) && line[k] == '=') return 1;
-    }
-    for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
-        size_t k = strlen(keys[i]);
-        if (!strncmp(line, keys[i], k) && line[k] == '=') return 1;
+    for (unsigned i = 0; i < sizeof(kLegacyKeys) / sizeof(kLegacyKeys[0]); ++i) {
+        size_t k = strlen(kLegacyKeys[i]);
+        if (!strncmp(line, kLegacyKeys[i], k) && line[k] == '=') return 1;
     }
     return 0;
 }
 
-static int combo_val(HWND page, int id, const char** vals, int n) {
-    int i = (int)SendMessageA(GetDlgItem(page, id), CB_GETCURSEL, 0, 0);
-    (void)n;
-    return i;
+/* --- fields: the control of a field, its value as text, load and save --- */
+static int option_index(const Field* f, const char* v) {
+    for (int i = 0; i < f->n; ++i)
+        if (!strcmp(v, f->values[i])) return i;
+    for (int i = 0; i < f->n; ++i)
+        if (!strcmp(f->dflt, f->values[i])) return i;
+    return 0;
 }
 
-/* Options only bb-runtime has pages for so far: applied from the shared settings.json so a game
- * started here behaves as it does from there (language, voice, name, DLC, HDR, validation). */
-static void shared_env(void) {
-    char v[MAX_PATH], path[MAX_PATH];
-    if (cfg_get_str("dlc_dir", v, sizeof(v), NULL) && v[0]) SetEnvironmentVariableA("BB_DLC_DIR", v);
-    snprintf(path, sizeof(path), "%s\\mods.json", g_root);
-    SetEnvironmentVariableA("BB_MODS_CONFIG", path);
-    snprintf(path, sizeof(path), "%s\\patches.json", g_root);
-    SetEnvironmentVariableA("BB_PATCHES_CONFIG", path);
-    snprintf(path, sizeof(path), "%s\\mods", g_root);
-    SetEnvironmentVariableA("BB_MODS_DIR", path);
-    snprintf(path, sizeof(path), "%s\\patches", g_root);
-    SetEnvironmentVariableA("BB_PATCHES_DIR", path);
-    cfg_get_str("language", v, sizeof(v), "1");
-    SetEnvironmentVariableA("BB_LANGUAGE", v);
-    cfg_get_str("voice_language", v, sizeof(v), "auto");
-    SetEnvironmentVariableA("BB_VOICE_LANGUAGE", v);
-    if (cfg_get_str("player_name", v, sizeof(v), NULL)) {
-        char* b = v;
-        while (*b == ' ') ++b;
-        size_t len = strlen(b);
-        while (len && b[len - 1] == ' ') b[--len] = 0;
-        if (*b) SetEnvironmentVariableA("BB_USER_NAME", b);
+static Field* field_by_key(const char* key) {
+    for (int i = 0; i < NFIELDS; ++i)
+        if (g_fields[i].kind != K_HEAD && !strcmp(g_fields[i].key, key)) return &g_fields[i];
+    return NULL;
+}
+
+static void slider_text(const Field* f, char* out, size_t n) {
+    int pos = (int)SendMessageA(f->hwnd, TBM_GETPOS, 0, 0);
+    snprintf(out, n, "%d.%02d", pos / 20, (pos % 20) * 5);
+}
+
+/* The field's current value as the text stored for it ("1"/"0" for check boxes). */
+static void field_value(const Field* f, char* out, size_t n) {
+    switch (f->kind) {
+    case K_CHECK:
+        snprintf(out, n, "%d", SendMessageA(f->hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED);
+        break;
+    case K_COMBO: {
+        int i = (int)SendMessageA(f->hwnd, CB_GETCURSEL, 0, 0);
+        snprintf(out, n, "%s", (i >= 0 && i < f->n) ? f->values[i] : f->dflt);
+        break;
     }
-    if (cfg_get_str("hdr", v, sizeof(v), "0") && !strcmp(v, "1")) SetEnvironmentVariableA("BB_HDR", "1");
-    if (cfg_get_str("vk_validation", v, sizeof(v), "0") && !strcmp(v, "1"))
-        SetEnvironmentVariableA("BB_VK_VALIDATION", "1");
+    case K_SLIDER: slider_text(f, out, n); break;
+    default:
+        GetWindowTextA(f->hwnd, out, (int)n);
+        break;
+    }
 }
 
-static void save_settings(void) {
-    char game[MAX_PATH], user[MAX_PATH], env[1024], mods[512], patches[512];
-    get_text(ID_GAME_EDIT, game, sizeof(game));
-    get_text(ID_USER_EDIT, user, sizeof(user));
-    get_text(ID_ENV_EDIT, env, sizeof(env));
-    page_get(g_pages[2], ID_MODS_EDIT, mods, sizeof(mods));
-    page_get(g_pages[2], ID_PATCH_EDIT, patches, sizeof(patches));
+static void game_dir_fallback(char* game, size_t n) {
+    DWORD attrs = GetFileAttributesA(game);
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) return;
+    /* Remembered folder gone: a CUSA03173 next to the checkout, else the checkout itself. */
+    char cand[MAX_PATH], norm[MAX_PATH];
+    snprintf(cand, sizeof(cand), "%s\\..\\CUSA03173", g_root);
+    GetFullPathNameA(cand, sizeof(norm), norm, NULL);
+    attrs = GetFileAttributesA(norm);
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY))
+        snprintf(norm, sizeof(norm), "%s", g_root);
+    snprintf(game, n, "%s", norm);
+}
 
-    int u = get_combo(ID_UPSCALER);
-    int p = get_combo(ID_PRESET);
-    int o = get_combo(ID_OUTPUT);
-    if (u < 0) u = 0;
-    if (p < 0) p = 0;
-    if (o < 0) o = 1;
+static void refresh_game_note(void) {
+    Field* f = field_by_key("game_dir");
+    char game[MAX_PATH], eboot[MAX_PATH + 16];
+    GetWindowTextA(f->hwnd, game, sizeof(game));
+    snprintf(eboot, sizeof(eboot), "%s\\eboot.bin", game);
+    SetWindowTextA(GetDlgItem(g_pages[PG_PLAY], ID_GAME_NOTE),
+                   GetFileAttributesA(eboot) != INVALID_FILE_ATTRIBUTES
+                       ? "eboot.bin found."
+                       : "No eboot.bin in this folder: pick the decrypted CUSA03173 dump.");
+}
 
-    char rest[16384] = "";
+static void load_fields(void) {
+    char v[1024];
+    for (int i = 0; i < NFIELDS; ++i) {
+        Field* f = &g_fields[i];
+        if (f->kind == K_HEAD) continue;
+        if (f->store == ST_INI) ini_get(f->key, v, sizeof(v), f->dflt);
+        else app_get(f->key, f->legacy, v, sizeof(v), f->dflt);
+        switch (f->kind) {
+        case K_CHECK:
+            SendMessageA(f->hwnd, BM_SETCHECK, atoi(v) ? BST_CHECKED : BST_UNCHECKED, 0);
+            break;
+        case K_COMBO:
+            SendMessageA(f->hwnd, CB_SETCURSEL, (WPARAM)option_index(f, v), 0);
+            break;
+        case K_SLIDER: {
+            double d = atof(v);
+            int pos = (int)(d * 20 + 0.5);
+            if (pos < 0) pos = 0;
+            if (pos > 40) pos = 40;
+            SendMessageA(f->hwnd, TBM_SETPOS, TRUE, pos);
+            slider_text(f, v, sizeof(v));
+            SetWindowTextA(GetDlgItem(g_pages[f->page], ID_VALUE_BASE + i), v);
+            break;
+        }
+        default:
+            if (!strcmp(f->key, "game_dir")) game_dir_fallback(v, sizeof(v));
+            SetWindowTextA(f->hwnd, v);
+            break;
+        }
+    }
+    refresh_game_note();
+}
+
+/* Writes bbport.ini (unknown lines kept) and settings.json (unknown keys kept). */
+static int save_fields(void) {
+    char rest[16384] = "", v[1024];
     FILE* f = fopen(g_ini, "r");
     if (f) {
         char line[512];
@@ -371,81 +397,106 @@ static void save_settings(void) {
     f = fopen(g_ini, "w");
     if (!f) {
         status("Cannot write bbport.ini");
-        return;
+        return 0;
     }
-    fprintf(f, "# written by bb-launcher (classic)\nupscaler=%s\npreset=%d\noutput_res=%s\n",
-            kUpscalers[u], p, kOutputs[o]);
-    fprintf(f, "effect_game_aa=0\nskip_intro=%d\nshow_fps=%d\n", get_check(ID_SKIP_INTRO),
-            get_check(ID_FPS_SHOW));
-    for (int i = 0; i < 7; ++i)
-        fprintf(f, "%s=%d\n", kFx[i].key,
-                SendMessageA(GetDlgItem(g_pages[0], ID_FX_BASE + i), BM_GETCHECK, 0, 0) ==
-                        BST_CHECKED);
-    for (int i = 0; i < 12; ++i)
-        fprintf(f, "%s=%d\n", kGp[i].key,
-                SendMessageA(GetDlgItem(g_pages[1], ID_GP_BASE + i), BM_GETCHECK, 0, 0) ==
-                        BST_CHECKED);
-    int mods_on = SendMessageA(GetDlgItem(g_pages[2], ID_MODS_ON), BM_GETCHECK, 0, 0) ==
-                  BST_CHECKED;
-    int pr = combo_val(g_pages[3], ID_PRESENT, kPresent, 4);
-    int dp = combo_val(g_pages[3], ID_DRAWPIPE, kPipe, 3);
-    int rb = combo_val(g_pages[3], ID_READBACKS, kRb, 3);
-    int ah = combo_val(g_pages[3], ID_AHEAD, kAhead, 3);
-    int cp = combo_val(g_pages[3], ID_CAP, kCaps, 6);
-    int fi = get_combo(ID_FPS);
-    if (fi < 0) fi = 1;
+    fputs("# written by bb-launcher (classic)\n", f);
+    for (int i = 0; i < NFIELDS; ++i) {
+        const Field* fl = &g_fields[i];
+        if (fl->kind == K_HEAD || fl->store != ST_INI) continue;
+        field_value(fl, v, sizeof(v));
+        fprintf(f, "%s=%s\n", fl->key, v);
+    }
     fputs(rest, f);
     fclose(f);
 
-    /* The launcher options go to settings.json, where bb-runtime reads them too. */
-    cfg_set_str("game_dir", game);
-    cfg_set_str("user_dir", user);
-    cfg_set_str("fps_mode", kFps[fi]);
-    cfg_set_bool("fullscreen", get_check(ID_FULLSCREEN));
-    cfg_set_bool("async_pipelines", get_check(ID_ASYNC));
-    cfg_set_bool("frame_stats", get_check(ID_STATS));
-    cfg_set_bool("gpu_profile", get_check(ID_STATS));
-    cfg_set_bool("mods_enabled", mods_on);
-    cfg_set_str("mods_dir", mods);
-    cfg_set_str("patches_dir", patches);
-    cfg_set_str("present_mode", pr >= 0 ? kPresent[pr] : "Mailbox");
-    cfg_set_str("draw_pipe", dp > 0 ? kPipe[dp] : "");
-    cfg_set_str("readbacks", rb > 0 ? kRb[rb] : "");
-    cfg_set_str("frames_ahead", ah > 0 ? kAhead[ah] : "");
-    cfg_set_str("frame_cap", cp > 0 ? kCaps[cp] : "");
-    cfg_set_str("extra_env", env);
-    if (!cfg_save()) status("Cannot write settings.json");
-    shared_env();
-
-    SetEnvironmentVariableA("BB_GAME_DIR", game);
-    SetEnvironmentVariableA("BB_FPS", kFps[fi]);
-    /* Unbuffered child output: the log file stays live while playing. */
-    SetEnvironmentVariableA("PYTHONUNBUFFERED", "1");
-    SetEnvironmentVariableA("PYTHONIOENCODING", "utf-8");
-    /* Match run.py: uncap runs free, 90 gets a 90 Hz vblank, else 60. */
-    SetEnvironmentVariableA("BB_VBLANK_HZ", !strcmp(kFps[fi], "uncap") ? "0" :
-                                             !strcmp(kFps[fi], "90") ? "90" : "60");
-    SetEnvironmentVariableA("BB_UPSCALER", kUpscalers[u]);
-    SetEnvironmentVariableA("BB_PRESENT_MODE", pr >= 0 ? kPresent[pr] : "Mailbox");
-    if (get_check(ID_FULLSCREEN)) SetEnvironmentVariableA("BB_FULLSCREEN", "1");
-    if (get_check(ID_ASYNC)) SetEnvironmentVariableA("BB_ASYNC_PIPELINES", "1");
-    if (get_check(ID_STATS)) {
-        SetEnvironmentVariableA("BB_FRAME_STATS", "1");
-        SetEnvironmentVariableA("BB_GPU_PROFILE", "1");
+    for (int i = 0; i < NFIELDS; ++i) {
+        const Field* fl = &g_fields[i];
+        if (fl->kind == K_HEAD || fl->store != ST_APP) continue;
+        field_value(fl, v, sizeof(v));
+        if (fl->kind == K_CHECK) cfg_set_bool(fl->key, atoi(v));
+        else cfg_set_str(fl->key, v);
     }
-    if (user[0]) SetEnvironmentVariableA("BB_USER_DIR", user);
-    SetEnvironmentVariableA("BB_MODS_ENABLED", mods_on ? "1" : "0");
-    if (mods[0]) SetEnvironmentVariableA("BB_MODS_DIR", mods);
-    if (patches[0]) SetEnvironmentVariableA("BB_PATCHES_DIR", patches);
-    if (dp > 0) SetEnvironmentVariableA("BB_DRAW_PIPE", kPipe[dp]);
-    if (rb > 0) SetEnvironmentVariableA("BB_READBACKS", kRb[rb]);
-    if (ah > 0) SetEnvironmentVariableA("BB_FRAMES_AHEAD", kAhead[ah]);
-    if (cp > 0) SetEnvironmentVariableA("BB_FPS_LIMIT", kCaps[cp]);
-    for (char* tok = strtok(env, " "); tok; tok = strtok(NULL, " ")) {
-        char* eq = strchr(tok, '=');
-        if (eq) {
-            *eq = 0;
-            SetEnvironmentVariableA(tok, eq + 1);
+    /* One check box covers both logs. */
+    field_value(field_by_key("frame_stats"), v, sizeof(v));
+    cfg_set_bool("gpu_profile", atoi(v));
+    if (!cfg_save()) {
+        status("Cannot write settings.json");
+        return 0;
+    }
+    return 1;
+}
+
+/* --- the environment handed to the game, from the saved settings --- */
+static void set_env(const char* name, const char* v) {
+    SetEnvironmentVariableA(name, v);
+}
+
+static void apply_env(void) {
+    char v[1024], path[MAX_PATH + 16];
+    cfg_get_str("game_dir", v, sizeof(v), "");
+    set_env("BB_GAME_DIR", v);
+    if (cfg_get_str("user_dir", v, sizeof(v), "") && v[0]) set_env("BB_USER_DIR", v);
+    if (cfg_get_str("dlc_dir", v, sizeof(v), "") && v[0]) set_env("BB_DLC_DIR", v);
+
+    snprintf(path, sizeof(path), "%s\\mods.json", g_root);
+    set_env("BB_MODS_CONFIG", path);
+    snprintf(path, sizeof(path), "%s\\patches.json", g_root);
+    set_env("BB_PATCHES_CONFIG", path);
+    cfg_get_str("mods_enabled", v, sizeof(v), "1");
+    set_env("BB_MODS_ENABLED", v);
+    if (!(cfg_get_str("mods_dir", v, sizeof(v), "") && v[0]))
+        snprintf(v, sizeof(v), "%s\\mods", g_root);
+    set_env("BB_MODS_DIR", v);
+    if (!(cfg_get_str("patches_dir", v, sizeof(v), "") && v[0]))
+        snprintf(v, sizeof(v), "%s\\patches", g_root);
+    set_env("BB_PATCHES_DIR", v);
+
+    cfg_get_str("language", v, sizeof(v), "1");
+    set_env("BB_LANGUAGE", v);
+    cfg_get_str("voice_language", v, sizeof(v), "auto");
+    set_env("BB_VOICE_LANGUAGE", v);
+    if (cfg_get_str("player_name", v, sizeof(v), "")) {
+        char* b = v;
+        while (*b == ' ') ++b;
+        size_t len = strlen(b);
+        while (len && b[len - 1] == ' ') b[--len] = 0;
+        if (*b) set_env("BB_USER_NAME", b);
+    }
+
+    cfg_get_str("fullscreen", v, sizeof(v), "0");
+    set_env("BB_FULLSCREEN", v);
+    cfg_get_str("present_mode", v, sizeof(v), "Mailbox");
+    set_env("BB_PRESENT_MODE", v);
+    if (cfg_get_str("hdr", v, sizeof(v), "0") && !strcmp(v, "1")) set_env("BB_HDR", "1");
+    cfg_get_str("fps_mode", v, sizeof(v), "60");
+    set_env("BB_FPS", v);
+    /* Match run.py: uncap runs free, 90 gets a 90 Hz vblank, else 60. */
+    set_env("BB_VBLANK_HZ", !strcmp(v, "uncap") ? "0" : !strcmp(v, "90") ? "90" : "60");
+    if (cfg_get_str("frame_cap", v, sizeof(v), "") && v[0]) set_env("BB_FPS_LIMIT", v);
+    if (cfg_get_str("draw_pipe", v, sizeof(v), "") && v[0]) set_env("BB_DRAW_PIPE", v);
+    if (cfg_get_str("readbacks", v, sizeof(v), "") && v[0]) set_env("BB_READBACKS", v);
+    if (cfg_get_str("frames_ahead", v, sizeof(v), "") && v[0]) set_env("BB_FRAMES_AHEAD", v);
+
+    if (cfg_get_str("frame_stats", v, sizeof(v), "0") && !strcmp(v, "1")) {
+        set_env("BB_FRAME_STATS", "1");
+        set_env("BB_GPU_PROFILE", "1");
+    }
+    if (cfg_get_str("async_pipelines", v, sizeof(v), "0") && !strcmp(v, "1"))
+        set_env("BB_ASYNC_PIPELINES", "1");
+    if (cfg_get_str("vk_validation", v, sizeof(v), "0") && !strcmp(v, "1"))
+        set_env("BB_VK_VALIDATION", "1");
+
+    /* Unbuffered child output: the log file stays live while playing. */
+    set_env("PYTHONUNBUFFERED", "1");
+    set_env("PYTHONIOENCODING", "utf-8");
+
+    if (cfg_get_str("extra_env", v, sizeof(v), "")) {
+        for (char* tok = strtok(v, " "); tok; tok = strtok(NULL, " ")) {
+            char* eq = strchr(tok, '=');
+            if (eq) {
+                *eq = 0;
+                set_env(tok, eq + 1);
+            }
         }
     }
 }
@@ -512,8 +563,8 @@ static DWORD WINAPI watch_thread(LPVOID unused) {
 static void on_run(void) {
     if (g_running) return;
     char game[MAX_PATH];
-    get_text(ID_GAME_EDIT, game, sizeof(game));
-    char eboot[MAX_PATH];
+    GetWindowTextA(field_by_key("game_dir")->hwnd, game, sizeof(game));
+    char eboot[MAX_PATH + 16];
     snprintf(eboot, sizeof(eboot), "%s\\eboot.bin", game);
     if (GetFileAttributesA(eboot) == INVALID_FILE_ATTRIBUTES) {
         status("No eboot.bin in the game folder.");
@@ -521,7 +572,17 @@ static void on_run(void) {
                     "Bloodborne", MB_OK | MB_ICONWARNING);
         return;
     }
-    save_settings();
+    if (!save_fields()) return;
+    /* Online play is set up in bb-runtime; this launcher cannot start it yet. */
+    char online[16];
+    if (cfg_get_str("online", online, sizeof(online), "0") && !strcmp(online, "1") &&
+        MessageBoxA(g_main,
+                    "Online play is turned on in your settings, but this launcher cannot start it "
+                    "yet (use bb-runtime for that).\n\nStart the game offline?",
+                    "Bloodborne", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        return;
+    }
+    apply_env();
     /* Packaged: the frozen runtime next to us runs run.py itself (--run),
      * so players need no Python. Dev tree: python run.py. */
     char frozen[MAX_PATH], cmd[2048];
@@ -600,7 +661,8 @@ static void on_run(void) {
     CloseHandle(CreateThread(NULL, 0, watch_thread, NULL, 0, NULL));
 }
 
-    /* Modern folder picker: works on every drive. target lives on page/parent. */
+/* Modern folder picker: works on every drive. The chosen path goes into the edit control
+ * edit_id of parent. */
 static void pick_folder_into(HWND parent, int edit_id, const wchar_t* title) {
     IFileOpenDialog* dlg = NULL;
     if (FAILED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER,
@@ -626,16 +688,18 @@ static void pick_folder_into(HWND parent, int edit_id, const wchar_t* title) {
     dlg->lpVtbl->Release(dlg);
 }
 
-static void on_browse(void) {
-    pick_folder_into(g_main, ID_GAME_EDIT, L"Pick the CUSA03173 game folder");
+static void on_browse(int index) {
+    const Field* f = &g_fields[index];
+    wchar_t title[96];
+    swprintf(title, sizeof(title) / sizeof(title[0]), L"Pick a folder");
+    pick_folder_into(g_pages[f->page], f->id, title);
 }
 
-/* --- tab pages --- */
+/* --- pages --- */
 static HWND make_page(void) {
-    /* Same wndproc as main so page buttons (browse) deliver WM_COMMAND; only the
+    /* Same wndproc as main so page controls deliver WM_COMMAND/WM_HSCROLL; only the
      * main window owns Close/quit. */
-    HWND h = CreateWindowA("BbPage", "", WS_CHILD, 0, 0, 100, 100, g_main, NULL, NULL, NULL);
-    return h;
+    return CreateWindowA("BbPage", "", WS_CHILD, 0, 0, 100, 100, g_main, NULL, NULL, NULL);
 }
 
 static void place_pages(void) {
@@ -643,107 +707,109 @@ static void place_pages(void) {
     GetWindowRect(g_tabs, &rc);
     MapWindowPoints(NULL, g_main, (POINT*)&rc, 2);
     TabCtrl_AdjustRect(g_tabs, FALSE, &rc);
-    for (int i = 0; i < 4; ++i)
-        SetWindowPos(g_pages[i], NULL, rc.left, rc.top, rc.right - rc.left,
-                     rc.bottom - rc.top, SWP_NOZORDER);
+    for (int i = 0; i < PG_COUNT; ++i)
+        SetWindowPos(g_pages[i], NULL, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
+                     SWP_NOZORDER);
 }
 
-static void build_pages(void) {
-    /* Effects (7 rows fit the tab display area). */
-    g_pages[0] = make_page();
-    for (int i = 0; i < 7; ++i)
-        w_check(g_pages[0], ID_FX_BASE + i, kFx[i].label, 12, 6 + i * 22, 270);
-    /* Gameplay: two columns of six. WS_VISIBLE is required (manual creation). */
-    g_pages[1] = make_page();
-    for (int i = 0; i < 12; ++i) {
-        int col = i / 6, row = i % 6;
-        HWND h = CreateWindowA("BUTTON", kGp[i].label, WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                               BS_AUTOCHECKBOX, S(12 + col * 150), S(8 + row * 24), S(145),
-                               S(20), g_pages[1], (HMENU)(INT_PTR)(ID_GP_BASE + i), NULL, NULL);
-        SendMessageA(h, WM_SETFONT, (WPARAM)g_font, 1);
+static void build_page(int pg) {
+    HWND page = g_pages[pg];
+    int y = 10;
+    for (int i = 0; i < NFIELDS; ++i) {
+        Field* f = &g_fields[i];
+        if (f->page != pg) continue;
+        f->id = ID_FIELD_BASE + i;
+        switch (f->kind) {
+        case K_HEAD: {
+            if (y > 10) y += 8;
+            HWND h = w_label(page, 0, f->label, LABEL_X, y, PAGE_W - 24);
+            SendMessageA(h, WM_SETFONT, (WPARAM)g_bold, 1);
+            y += 22;
+            break;
+        }
+        case K_CHECK:
+            f->hwnd = w_check(page, f->id, f->label, LABEL_X, y, PAGE_W - 24);
+            y += 23;
+            break;
+        case K_COMBO:
+            w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
+            f->hwnd = w_combo(page, f->id, CTRL_X, y, CTRL_W, f->labels, f->n);
+            y += 29;
+            break;
+        case K_TEXT:
+            w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
+            f->hwnd = w_edit(page, f->id, CTRL_X, y, CTRL_W);
+            y += 29;
+            break;
+        case K_FOLDER:
+            w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
+            f->hwnd = w_edit(page, f->id, CTRL_X, y, CTRL_W - 50);
+            w_button(page, ID_BROWSE_BASE + i, "...", CTRL_X + CTRL_W - 44, y - 1, 44, 24);
+            y += 29;
+            if (!strcmp(f->key, "game_dir")) {
+                w_label(page, ID_GAME_NOTE, "", CTRL_X, y - 2, CTRL_W);
+                y += 22;
+            }
+            break;
+        case K_SLIDER: {
+            w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
+            f->hwnd = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                    TBS_HORZ | TBS_NOTICKS, S(CTRL_X), S(y), S(CTRL_W - 56), S(26),
+                                    page, (HMENU)(INT_PTR)f->id, NULL, NULL);
+            SendMessageA(f->hwnd, TBM_SETRANGE, TRUE, MAKELPARAM(0, 40));
+            w_label(page, ID_VALUE_BASE + i, "0.50", CTRL_X + CTRL_W - 46, y + 4, 46);
+            y += 29;
+            break;
+        }
+        }
     }
-    /* Mods. */
-    g_pages[2] = make_page();
-    w_check(g_pages[2], ID_MODS_ON, "Enable loose-file mods", 12, 8, 270);
-    w_label(g_pages[2], 0, "Mods folder:", 12, 38, 90);
-    w_edit(g_pages[2], ID_MODS_EDIT, 12, 56, 220);
-    w_button(g_pages[2], ID_MODS_BROWSE, "...", 236, 54, 42, 26);
-    w_label(g_pages[2], 0, "Extra patches folder:", 12, 86, 150);
-    w_edit(g_pages[2], ID_PATCH_EDIT, 12, 104, 220);
-    w_button(g_pages[2], ID_PATCH_BROWSE, "...", 236, 102, 42, 26);
-    /* Performance. */
-    g_pages[3] = make_page();
-    const struct {
-        int id;
-        const char* lab;
-        const char** items;
-        int n;
-    } rows[] = {{ID_PRESENT, "Presentation:", kPresent, 4},
-                {ID_DRAWPIPE, "GPU draw pipe:", kPipeLabels, 3},
-                {ID_READBACKS, "GPU readbacks:", kRbLabels, 3},
-                {ID_AHEAD, "Frames ahead:", kAheadLabels, 3},
-                {ID_CAP, "Frame cap:", kCapLabels, 6}};
-    for (int i = 0; i < 5; ++i) {
-        w_label(g_pages[3], 0, rows[i].lab, 12, 10 + i * 30, 110);
-        w_combo(g_pages[3], rows[i].id, 124, 8 + i * 30, 158, rows[i].items, rows[i].n);
-    }
-    for (int i = 0; i < 4; ++i) ShowWindow(g_pages[i], SW_HIDE);
 }
 
-static void layout(int advanced) {
-    int show = advanced ? SW_SHOW : SW_HIDE;
-    ShowWindow(g_tabs, show);
-    for (int i = 0; i < 4; ++i)
-        ShowWindow(g_pages[i], (show && i == TabCtrl_GetCurSel(g_tabs)) ? SW_SHOW : SW_HIDE);
-    /* Advanced rows (user dir + extra env) live above the tabs. */
-    int au = advanced ? SW_SHOW : SW_HIDE;
-    ShowWindow(GetDlgItem(g_main, ID_USER_LBL), au);
-    ShowWindow(GetDlgItem(g_main, ID_USER_EDIT), au);
-    ShowWindow(GetDlgItem(g_main, ID_USER_BROWSE), au);
-    ShowWindow(GetDlgItem(g_main, ID_ENV_LBL), au);
-    ShowWindow(GetDlgItem(g_main, ID_ENV_EDIT), au);
-    /* Content ends at 318 basic (last checkbox) / 576 advanced (tabs). */
-    int by = advanced ? 588 : 330;
-    SetWindowPos(GetDlgItem(g_main, ID_RUN), NULL, S(16), S(by), S(150), S(30), SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(g_main, ID_ADVANCED), NULL, S(174), S(by), S(150), S(30),
-                 SWP_NOZORDER);
-    SetWindowPos(g_status, NULL, S(16), S(by + 36), S(308), S(16), SWP_NOZORDER);
-    RECT rc = {0, 0, S(340), S(advanced ? 660 : 392)};
-    AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
-    SetWindowPos(g_main, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
-                 SWP_NOMOVE | SWP_NOZORDER);
-    if (advanced) place_pages();
+static void show_page(int sel) {
+    for (int i = 0; i < PG_COUNT; ++i) ShowWindow(g_pages[i], i == sel ? SW_SHOW : SW_HIDE);
 }
 
-/* --- main window --- */
+/* Enemy control and the free camera share their buttons: one at a time. */
+static void exclusive_cheats(int clicked_id) {
+    Field* control = field_by_key("cheat_enemy_control");
+    Field* camera = field_by_key("debug_camera");
+    if (clicked_id == control->id && SendMessageA(control->hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED)
+        SendMessageA(camera->hwnd, BM_SETCHECK, BST_UNCHECKED, 0);
+    if (clicked_id == camera->id && SendMessageA(camera->hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED)
+        SendMessageA(control->hwnd, BM_SETCHECK, BST_UNCHECKED, 0);
+}
+
+/* --- window procedure (main window and pages) --- */
 static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
-    case WM_COMMAND:
-        switch (LOWORD(wp)) {
-        case ID_BROWSE: on_browse(); break;
-        case ID_USER_BROWSE:
-            pick_folder_into(g_main, ID_USER_EDIT, L"Pick the saves folder");
-            break;
-        case ID_MODS_BROWSE:
-            pick_folder_into(g_pages[2], ID_MODS_EDIT, L"Pick the mods folder");
-            break;
-        case ID_PATCH_BROWSE:
-            pick_folder_into(g_pages[2], ID_PATCH_EDIT, L"Pick the extra patches folder");
-            break;
-        case ID_RUN: on_run(); break;
-        case ID_ADVANCED:
-            g_advanced = !g_advanced;
-            SetWindowTextA(GetDlgItem(g_main, ID_ADVANCED), g_advanced ? "Basic" : "Advanced");
-            layout(g_advanced);
-            break;
+    case WM_COMMAND: {
+        int id = LOWORD(wp);
+        if (id == ID_RUN) on_run();
+        else if (id == ID_SAVE) {
+            if (save_fields()) status("Settings saved.");
+        } else if (id >= ID_BROWSE_BASE && id < ID_BROWSE_BASE + NFIELDS) {
+            on_browse(id - ID_BROWSE_BASE);
+        } else if (id >= ID_FIELD_BASE && id < ID_FIELD_BASE + NFIELDS) {
+            const Field* f = &g_fields[id - ID_FIELD_BASE];
+            if (f->kind == K_CHECK && HIWORD(wp) == BN_CLICKED) exclusive_cheats(id);
+            if (f->kind == K_FOLDER && !strcmp(f->key, "game_dir") && HIWORD(wp) == EN_CHANGE)
+                refresh_game_note();
         }
         break;
+    }
+    case WM_HSCROLL: {
+        for (int i = 0; i < NFIELDS; ++i) {
+            if (g_fields[i].kind == K_SLIDER && g_fields[i].hwnd == (HWND)lp) {
+                char v[16];
+                slider_text(&g_fields[i], v, sizeof(v));
+                SetWindowTextA(GetDlgItem(w, ID_VALUE_BASE + i), v);
+            }
+        }
+        break;
+    }
     case WM_NOTIFY: {
         NMHDR* n = (NMHDR*)lp;
-        if (n->idFrom == ID_TABS && n->code == TCN_SELCHANGE) {
-            int sel = TabCtrl_GetCurSel(g_tabs);
-            for (int i = 0; i < 4; ++i) ShowWindow(g_pages[i], i == sel ? SW_SHOW : SW_HIDE);
-        }
+        if (n->idFrom == ID_TABS && n->code == TCN_SELCHANGE) show_page(TabCtrl_GetCurSel(g_tabs));
         break;
     }
     case WM_CLOSE:
@@ -753,100 +819,62 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if (w == g_main) PostQuitMessage(0);
         break;
     case WM_DPICHANGED: {
-        /* Best effort for monitor moves: new scale + font, same layout pass. */
+        /* Best effort for monitor moves: the window follows the suggested rectangle. */
         g_dpi = HIWORD(wp);
         if (g_dpi < 96) g_dpi = 96;
-        LOGFONTA lf;
-        GetObjectA(GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
-        lf.lfHeight = lf.lfHeight * g_dpi / 96;
-        lf.lfWidth = 0;
-        HFONT fresh = CreateFontIndirectA(&lf);
-        if (fresh) {
-            DeleteObject(g_font);
-            g_font = fresh;
-        }
         RECT* suggested = (RECT*)lp;
         SetWindowPos(w, NULL, suggested->left, suggested->top,
                      suggested->right - suggested->left, suggested->bottom - suggested->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
-        layout(g_advanced);
         break;
     }
     }
     return DefWindowProcA(w, m, wp, lp);
 }
 
+static HFONT make_font(int bold) {
+    LOGFONTA lf;
+    GetObjectA(GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
+    lf.lfHeight = lf.lfHeight * g_dpi / 96;
+    lf.lfWidth = 0;
+    if (bold) lf.lfWeight = FW_BOLD;
+    return CreateFontIndirectA(&lf);
+}
+
 static void build_ui(void) {
-    int y = S(12);
-    HFONT big;
-    {
-        HWND t = CreateWindowA("STATIC", "Bloodborne bbport", WS_CHILD | WS_VISIBLE, S(16), y,
-                               S(308), S(22), g_main, NULL, NULL, NULL);
-        big = CreateFontA(S(18), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                          DEFAULT_PITCH, "MS Shell Dlg");
-        SendMessageA(t, WM_SETFONT, (WPARAM)big, 1);
-    }
-    y += S(24);
-    w_label(g_main, 0, "native port launcher: settings, then Run.", 16, y, 308);
-    y += S(22);
-    w_label(g_main, 0, "Game folder:", 16, y + S(4), 90);
-    w_edit(g_main, ID_GAME_EDIT, 100, y, 170);
-    w_button(g_main, ID_BROWSE, "...", 276, y - S(2), 48, 26);
-    y += S(30);
-    w_label(g_main, 0, "Upscaler:", 16, y + S(4), 90);
-    w_combo(g_main, ID_UPSCALER, 100, y, 224, kUpscalerLabels, 5);
-    y += S(30);
-    w_label(g_main, 0, "Preset:", 16, y + S(4), 90);
-    w_combo(g_main, ID_PRESET, 100, y, 224, kPresets, 5);
-    y += S(30);
-    w_label(g_main, 0, "Output:", 16, y + S(4), 90);
-    w_combo(g_main, ID_OUTPUT, 100, y, 224, kOutputs, 4);
-    y += S(30);
-    w_label(g_main, 0, "Frame rate:", 16, y + S(4), 90);
-    w_combo(g_main, ID_FPS, 100, y, 224, kFpsLabels, 4);
-    y += S(32);
-    w_check(g_main, ID_FULLSCREEN, "Run in full screen", 16, y, 300);
-    y += S(22);
-    w_check(g_main, ID_SKIP_INTRO, "Skip the intro logos and movie", 16, y, 300);
-    y += S(22);
-    w_check(g_main, ID_ASYNC, "Async pipeline compilation (experimental)", 16, y, 300);
-    y += S(22);
-    w_check(g_main, ID_STATS, "Frame statistics + GPU profile in the log", 16, y, 300);
-    y += S(22);
-    w_check(g_main, ID_FPS_SHOW, "Show FPS in the game", 16, y, 300);
-    y += S(28);
-    /* Advanced rows live here (hidden until Advanced). */
-    w_label(g_main, ID_USER_LBL, "User dir (saves):", 16, y + S(4), 100);
-    w_edit(g_main, ID_USER_EDIT, 118, y, 160);
-    w_button(g_main, ID_USER_BROWSE, "...", 282, y - S(2), 42, 26);
-    y += S(30);
-    w_label(g_main, ID_ENV_LBL, "Extra env:", 16, y + S(4), 100);
-    w_edit(g_main, ID_ENV_EDIT, 118, y, 206);
-    y += S(30);
-    /* Tabs below the rows; buttons + status below the tabs (no overlaps). */
-    INITCOMMONCONTROLSEX icc = {.dwSize = sizeof(icc), .dwICC = ICC_TAB_CLASSES};
+    HWND title = CreateWindowA("STATIC", "Bloodborne bbport", WS_CHILD | WS_VISIBLE, S(14), S(10),
+                               S(400), S(24), g_main, NULL, NULL, NULL);
+    HFONT big = CreateFontA(S(18), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+                            DEFAULT_PITCH, "MS Shell Dlg");
+    SendMessageA(title, WM_SETFONT, (WPARAM)big, 1);
+    w_label(g_main, 0, "Native port launcher: set up the game, then Run.", 14, 34, 500);
+
+    INITCOMMONCONTROLSEX icc = {.dwSize = sizeof(icc), .dwICC = ICC_TAB_CLASSES | ICC_BAR_CLASSES};
     InitCommonControlsEx(&icc);
-    g_tabs = CreateWindowA(WC_TABCONTROLA, "", WS_CHILD | WS_TABSTOP | TCS_TABS, S(16), S(y),
-                           S(308), S(190), g_main, (HMENU)(INT_PTR)ID_TABS, NULL, NULL);
+    g_tabs = CreateWindowA(WC_TABCONTROLA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TABS,
+                           S(TABS_X), S(TABS_Y), S(TABS_W), S(TABS_H), g_main,
+                           (HMENU)(INT_PTR)ID_TABS, NULL, NULL);
     SendMessageA(g_tabs, WM_SETFONT, (WPARAM)g_font, 1);
-    const char* tabs[] = {"Effects", "Gameplay", "Mods", "Perf"};
-    for (int i = 0; i < 4; ++i) {
-        TCITEMA ti = {.mask = TCIF_TEXT, .pszText = (char*)tabs[i]};
+    for (int i = 0; i < PG_COUNT; ++i) {
+        TCITEMA ti = {.mask = TCIF_TEXT, .pszText = (char*)kPageNames[i]};
         TabCtrl_InsertItem(g_tabs, i, &ti);
+        g_pages[i] = make_page();
+        build_page(i);
     }
-    build_pages();
-    w_button(g_main, ID_RUN, "Run", 16, 330, 150, 30);
-    w_button(g_main, ID_ADVANCED, "Advanced", 174, 330, 150, 30);
-    g_status = CreateWindowA("STATIC", "Ready.", WS_CHILD | WS_VISIBLE, S(16), S(366), S(308),
-                             S(16), g_main, (HMENU)(INT_PTR)ID_STATUS, NULL, NULL);
+    place_pages();
+    show_page(0);
+
+    int by = TABS_Y + TABS_H + 10;
+    w_button(g_main, ID_RUN, "Run", 10, by, 130, 30);
+    w_button(g_main, ID_SAVE, "Save", 150, by, 100, 30);
+    g_status = CreateWindowA("STATIC", "Ready.", WS_CHILD | WS_VISIBLE, S(10), S(by + 38),
+                             S(TABS_W), S(16), g_main, (HMENU)(INT_PTR)ID_STATUS, NULL, NULL);
     SendMessageA(g_status, WM_SETFONT, (WPARAM)g_font, 1);
-    (void)big;
 }
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     (void)prev;
-    (void)cmd;
     CoInitialize(NULL);
 
     char exe[MAX_PATH];
@@ -892,28 +920,32 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         (UINT(WINAPI*)(void))GetProcAddress(user32, "GetDpiForSystem");
     g_dpi = get_system_dpi ? (int)get_system_dpi() : 96;
     if (g_dpi < 96) g_dpi = 96;
-    {
-        LOGFONTA lf;
-        GetObjectA(GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
-        lf.lfHeight = lf.lfHeight * g_dpi / 96;
-        lf.lfWidth = 0;
-        g_font = CreateFontIndirectA(&lf);
-    }
-    RECT rc = {0, 0, S(340), S(392)};
+    g_font = make_font(0);
+    g_bold = make_font(1);
+    RECT rc = {0, 0, S(WIN_W), S(WIN_H)};
     AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     g_main = CreateWindowA("BbLauncher", "Bloodborne", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
                            WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left,
                            rc.bottom - rc.top, NULL, NULL, inst, NULL);
     build_ui();
-    load_settings();
-    layout(0);
+    load_fields();
+    /* --page=N (0-based) opens on that tab. */
+    const char* opt = cmd ? strstr(cmd, "--page=") : NULL;
+    if (opt) {
+        int sel = atoi(opt + 7);
+        if (sel >= 0 && sel < PG_COUNT) {
+            TabCtrl_SetCurSel(g_tabs, sel);
+            show_page(sel);
+        }
+    }
     ShowWindow(g_main, show);
     UpdateWindow(g_main);
 
     MSG msg;
     while (GetMessageA(&msg, NULL, 0, 0)) {
         /* Tab navigation across controls. */
-        if (!IsDialogMessageA(g_main, &msg)) {
+        int cur = TabCtrl_GetCurSel(g_tabs);
+        if (!(cur >= 0 && IsDialogMessageA(g_pages[cur], &msg)) && !IsDialogMessageA(g_main, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         }
