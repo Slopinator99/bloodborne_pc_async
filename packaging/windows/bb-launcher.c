@@ -33,6 +33,11 @@
 #define ID_MOD_UP 5001
 #define ID_MOD_DOWN 5002
 #define ID_LISTS_REFRESH 5003
+#define ID_LOG_EDIT 5100
+#define ID_LOG_COPY 5101
+#define ID_LOG_CLEAR 5102
+#define ID_LOG_OPEN 5103
+#define LOG_TIMER 1
 #define ID_FIELD_BASE 1000  /* field i: control 1000+i */
 #define ID_BROWSE_BASE 2000 /* folder field i: browse button 2000+i */
 #define ID_VALUE_BASE 3000  /* slider field i: value text 3000+i */
@@ -98,9 +103,9 @@ static const char* kReadbackL[] = {"Relaxed (default)", "Off", "Precise"};
 /* --- the field table --- */
 enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER, K_LIST };
 enum { ST_INI, ST_APP };
-enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_MODS, PG_ADV, PG_COUNT };
+enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_MODS, PG_ADV, PG_LOG, PG_COUNT };
 static const char* kPageNames[PG_COUNT] = {"Play", "Graphics", "Display", "Game",
-                                           "Cheats", "Mods", "Advanced"};
+                                           "Cheats", "Mods", "Advanced", "Log"};
 
 typedef struct {
     int page, kind, store;
@@ -1133,6 +1138,115 @@ static void on_browse(int index) {
     if (!strcmp(f->key, "mods_dir") || !strcmp(f->key, "patches_dir")) lists_refresh();
 }
 
+/* --- Log tab: the tail of the game's output (launcher-run.log), refreshed while shown --- */
+#define LOG_TAIL_BYTES (96 * 1024)
+static HWND g_log_edit;
+static ULONGLONG g_log_stamp;  /* size and time of the file as last shown */
+static ULONGLONG g_log_from;   /* bytes before this are hidden (Clear) */
+
+static void log_path(char* out, size_t n) {
+    snprintf(out, n, "%s\\launcher-run.log", g_root);
+}
+
+/* UTF-8 text into the log edit. */
+static void log_set_text(const char* utf8) {
+    int wide = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+    wchar_t* buf = wide > 0 ? malloc((size_t)wide * sizeof(wchar_t)) : NULL;
+    if (!buf) return;
+    MultiByteToWideChar(CP_UTF8, 0, utf8, -1, buf, wide);
+    SetWindowTextW(g_log_edit, buf);
+    free(buf);
+}
+
+static void log_reload(int force) {
+    char path[MAX_PATH + 24];
+    log_path(path, sizeof(path));
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) {
+        log_set_text("No log yet: the game's output appears here once it has run.");
+        g_log_stamp = 0;
+        return;
+    }
+    ULONGLONG size = ((ULONGLONG)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+    ULONGLONG stamp = size ^ (((ULONGLONG)info.ftLastWriteTime.dwHighDateTime << 32) |
+                              info.ftLastWriteTime.dwLowDateTime);
+    if (!force && stamp == g_log_stamp) return;
+    g_log_stamp = stamp;
+    if (size < g_log_from) g_log_from = 0; /* a new run replaced the file */
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    ULONGLONG start = size > LOG_TAIL_BYTES ? size - LOG_TAIL_BYTES : 0;
+    if (start < g_log_from) start = g_log_from;
+    fseek(f, (long)start, SEEK_SET);
+    char* raw = malloc((size_t)(size - start) + 1);
+    char* text = raw ? malloc((size_t)(size - start) * 2 + 1) : NULL;
+    if (text) {
+        size_t got = fread(raw, 1, (size_t)(size - start), f);
+        raw[got] = 0;
+        char* in = raw;
+        if (start > 0) { /* the tail starts mid-line: drop the partial first line */
+            char* nl = strchr(raw, '\n');
+            in = nl ? nl + 1 : raw + got;
+        }
+        char* o = text;
+        for (; *in; ++in) {
+            if (*in == '\r') continue;
+            if (*in == '\n') *o++ = '\r';
+            *o++ = *in;
+        }
+        *o = 0;
+        log_set_text(text);
+        /* Follow the end: EM_SCROLLCARET does nothing in a control without focus. */
+        int lines = (int)SendMessageW(g_log_edit, EM_GETLINECOUNT, 0, 0);
+        SendMessageW(g_log_edit, EM_LINESCROLL, 0, lines);
+    }
+    free(text);
+    free(raw);
+    fclose(f);
+}
+
+static void log_copy(void) {
+    int len = GetWindowTextLengthW(g_log_edit);
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, ((SIZE_T)len + 1) * sizeof(wchar_t));
+    if (!mem) return;
+    GetWindowTextW(g_log_edit, (wchar_t*)GlobalLock(mem), len + 1);
+    GlobalUnlock(mem);
+    if (OpenClipboard(g_main)) {
+        EmptyClipboard();
+        SetClipboardData(CF_UNICODETEXT, mem);
+        CloseClipboard();
+        status("Log copied to the clipboard.");
+    } else {
+        GlobalFree(mem);
+    }
+}
+
+static void log_clear(void) {
+    char path[MAX_PATH + 24];
+    log_path(path, sizeof(path));
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (GetFileAttributesExA(path, GetFileExInfoStandard, &info))
+        g_log_from = ((ULONGLONG)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+    log_reload(1);
+}
+
+static void build_log_page(HWND page) {
+    /* A Unicode control, fed UTF-8 converted here: the game's output is UTF-8 whatever the
+     * system's ANSI code page is. */
+    g_log_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+                                 WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL |
+                                 ES_AUTOHSCROLL | WS_TABSTOP, S(6), S(6), S(PAGE_W - 12), S(286),
+                                 page, (HMENU)(INT_PTR)ID_LOG_EDIT, NULL, NULL);
+    HFONT mono = CreateFontA(-MulDiv(8, g_dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, "Courier New");
+    SendMessageA(g_log_edit, WM_SETFONT, (WPARAM)mono, 1);
+    SendMessageA(g_log_edit, EM_SETLIMITTEXT, 0, 0);
+    w_button(page, ID_LOG_COPY, "Copy", 6, 298, 80, 23);
+    w_button(page, ID_LOG_CLEAR, "Clear", 92, 298, 80, 23);
+    w_button(page, ID_LOG_OPEN, "Open file", 178, 298, 80, 23);
+}
+
 /* The Play page shortcuts: 0 game folder, 1 saves folder, 2 last run log, 3 bbport.ini. */
 static void on_open(int which) {
     char path[MAX_PATH + 16], v[MAX_PATH];
@@ -1325,6 +1439,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_MOD_UP) mod_move(-1);
         else if (id == ID_MOD_DOWN) mod_move(1);
         else if (id == ID_LISTS_REFRESH) lists_refresh();
+        else if (id == ID_LOG_COPY) log_copy();
+        else if (id == ID_LOG_CLEAR) log_clear();
+        else if (id == ID_LOG_OPEN) on_open(2);
         else if (id == ID_CLOSE) SendMessageA(g_main, WM_CLOSE, 0, 0);
         else if (id == ID_SAVE) {
             if (save_fields()) status("Settings saved.");
@@ -1349,6 +1466,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         }
         break;
     }
+    case WM_TIMER:
+        if (wp == LOG_TIMER && w == g_main && TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
+        break;
     case WM_HSCROLL: {
         for (int i = 0; i < NFIELDS; ++i) {
             if (g_fields[i].kind == K_SLIDER && g_fields[i].hwnd == (HWND)lp) {
@@ -1361,7 +1481,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_NOTIFY: {
         NMHDR* n = (NMHDR*)lp;
-        if (n->idFrom == ID_TABS && n->code == TCN_SELCHANGE) show_page(TabCtrl_GetCurSel(g_tabs));
+        if (n->idFrom == ID_TABS && n->code == TCN_SELCHANGE) {
+            show_page(TabCtrl_GetCurSel(g_tabs));
+            if (TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
+        }
         break;
     }
     case WM_CLOSE:
@@ -1417,6 +1540,8 @@ static void build_ui(void) {
         if (i == PG_PLAY) {
             int top = build_play_banner(g_pages[i]);
             build_play_shortcuts(g_pages[i], build_page(i, top));
+        } else if (i == PG_LOG) {
+            build_log_page(g_pages[i]);
         } else {
             build_page(i, 8);
         }
@@ -1503,8 +1628,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         if (sel >= 0 && sel < PG_COUNT) {
             TabCtrl_SetCurSel(g_tabs, sel);
             show_page(sel);
+            if (sel == PG_LOG) log_reload(0);
         }
     }
+    SetTimer(g_main, LOG_TIMER, 1500, NULL);
     ShowWindow(g_main, show);
     UpdateWindow(g_main);
 
