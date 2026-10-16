@@ -9,6 +9,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 #include <commctrl.h>
 #include <stdio.h>
@@ -23,6 +24,8 @@
 #define ID_STATUS 116
 #define ID_TABS 117
 #define ID_GAME_NOTE 120
+#define ID_GAME_INFO 121
+#define ID_OPEN_BASE 4000 /* Play page shortcuts */
 #define ID_FIELD_BASE 1000  /* field i: control 1000+i */
 #define ID_BROWSE_BASE 2000 /* folder field i: browse button 2000+i */
 #define ID_VALUE_BASE 3000  /* slider field i: value text 3000+i */
@@ -117,7 +120,9 @@ typedef struct {
 
 static Field g_fields[] = {
     /* Play */
+    FLD_HEAD(PG_PLAY, "Game"),
     FLD_FOLDER(PG_PLAY, ST_APP, "game_dir", "launcher_game_dir", "Game folder:"),
+    FLD_HEAD(PG_PLAY, "Start options"),
     FLD_CHECK(PG_PLAY, ST_INI, "skip_intro", "", "Skip the intro logos and movie", "1"),
     FLD_CHECK(PG_PLAY, ST_INI, "show_fps", "", "Show the FPS counter in the game", "1"),
     /* Graphics */
@@ -344,15 +349,49 @@ static void game_dir_fallback(char* game, size_t n) {
     snprintf(game, n, "%s", norm);
 }
 
+/* TITLE and APP_VER from a PS4 param.sfo (little-endian key/value table). */
+static int read_sfo(const char* path, char* title, size_t tn, char* ver, size_t vn) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    unsigned char buf[8192];
+    size_t got = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    if (got < 20 || memcmp(buf, "\0PSF", 4) != 0) return 0;
+    unsigned keys = buf[8] | buf[9] << 8 | buf[10] << 16 | (unsigned)buf[11] << 24;
+    unsigned data = buf[12] | buf[13] << 8 | buf[14] << 16 | (unsigned)buf[15] << 24;
+    unsigned count = buf[16] | buf[17] << 8 | buf[18] << 16 | (unsigned)buf[19] << 24;
+    title[0] = ver[0] = 0;
+    for (unsigned i = 0; i < count && 20 + (i + 1) * 16 <= got; ++i) {
+        const unsigned char* e = buf + 20 + i * 16;
+        unsigned ko = e[0] | e[1] << 8, dlen = e[4] | e[5] << 8, doff = e[12] | e[13] << 8;
+        if (keys + ko >= got || data + doff + dlen > got) continue;
+        const char* key = (const char*)buf + keys + ko;
+        const char* val = (const char*)buf + data + doff;
+        if (!strcmp(key, "TITLE")) snprintf(title, tn, "%s", val);
+        else if (!strcmp(key, "APP_VER")) snprintf(ver, vn, "%s", val);
+    }
+    return 1;
+}
+
 static void refresh_game_note(void) {
     Field* f = field_by_key("game_dir");
-    char game[MAX_PATH], eboot[MAX_PATH + 16];
+    char game[MAX_PATH], path[MAX_PATH + 24], title[128], ver[32], info[128];
     GetWindowTextA(f->hwnd, game, sizeof(game));
-    snprintf(eboot, sizeof(eboot), "%s\\eboot.bin", game);
+    snprintf(path, sizeof(path), "%s\\eboot.bin", game);
+    int found = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
     SetWindowTextA(GetDlgItem(g_pages[PG_PLAY], ID_GAME_NOTE),
-                   GetFileAttributesA(eboot) != INVALID_FILE_ATTRIBUTES
-                       ? "eboot.bin found."
-                       : "No eboot.bin in this folder: pick the decrypted CUSA03173 dump.");
+                   found ? "eboot.bin found."
+                         : "No eboot.bin in this folder: pick the decrypted CUSA03173 dump.");
+    info[0] = 0;
+    snprintf(path, sizeof(path), "%s\\sce_sys\\param.sfo", game);
+    if (found && read_sfo(path, title, sizeof(title), ver, sizeof(ver)) && ver[0]) {
+        const char* trim = ver[0] == '0' ? ver + 1 : ver;
+        if (!strcmp(ver, "01.09"))
+            snprintf(info, sizeof(info), "Version %s: the community patches apply.", trim);
+        else
+            snprintf(info, sizeof(info), "Version %s: patches need 1.09 (30 FPS).", trim);
+    }
+    SetWindowTextA(GetDlgItem(g_pages[PG_PLAY], ID_GAME_INFO), info);
 }
 
 static void load_fields(void) {
@@ -701,6 +740,29 @@ static void on_browse(int index) {
     pick_folder_into(g_pages[f->page], f->id, title);
 }
 
+/* The Play page shortcuts: 0 game folder, 1 saves folder, 2 last run log, 3 bbport.ini. */
+static void on_open(int which) {
+    char path[MAX_PATH + 16], v[MAX_PATH];
+    if (which == 0) {
+        GetWindowTextA(field_by_key("game_dir")->hwnd, path, sizeof(path));
+    } else if (which == 1) {
+        GetWindowTextA(field_by_key("user_dir")->hwnd, v, sizeof(v));
+        if (v[0]) snprintf(path, sizeof(path), "%s", v);
+        else snprintf(path, sizeof(path), "%s\\user", g_root);
+    } else if (which == 2) {
+        snprintf(path, sizeof(path), "%s\\launcher-run.log", g_root);
+    } else {
+        snprintf(path, sizeof(path), "%s", g_ini);
+    }
+    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+        char msg[MAX_PATH + 64];
+        snprintf(msg, sizeof(msg), "Not there yet: %s", path);
+        status(msg);
+        return;
+    }
+    ShellExecuteA(g_main, "open", path, NULL, NULL, SW_SHOWNORMAL);
+}
+
 /* --- pages --- */
 static HWND make_page(void) {
     /* Same wndproc as main so page controls deliver WM_COMMAND/WM_HSCROLL; only the
@@ -725,7 +787,7 @@ static void end_group(HWND group, int group_y, int* y) {
     *y = group_y + h;
 }
 
-static void build_page(int pg) {
+static int build_page(int pg) {
     HWND page = g_pages[pg];
     int y = 8, ix = 0; /* ix: indent inside a group box */
     HWND group = NULL;
@@ -766,6 +828,8 @@ static void build_page(int pg) {
             y += ROW_H;
             if (!strcmp(f->key, "game_dir")) {
                 w_label(page, ID_GAME_NOTE, "", CTRL_X, y - 3, CTRL_W);
+                y += 14;
+                w_label(page, ID_GAME_INFO, "", CTRL_X, y - 3, CTRL_W);
                 y += 16;
             }
             break;
@@ -781,6 +845,19 @@ static void build_page(int pg) {
         }
     }
     if (group) end_group(group, group_y, &y);
+    return y;
+}
+
+/* Play: shortcuts to the things that are looked at most when something goes wrong. */
+static void build_play_shortcuts(HWND page, int y) {
+    static const char* names[4] = {"Open game folder", "Open saves folder", "Open last run log",
+                                   "Open bbport.ini"};
+    y += 4;
+    HWND group = CreateWindowA("BUTTON", "Shortcuts", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, S(6),
+                               S(y), S(PAGE_W - 12), S(74), page, NULL, NULL, NULL);
+    SendMessageA(group, WM_SETFONT, (WPARAM)g_font, 1);
+    for (int i = 0; i < 4; ++i)
+        w_button(page, ID_OPEN_BASE + i, names[i], 14 + (i % 2) * 188, y + 16 + (i / 2) * 28, 182, 23);
 }
 
 static void show_page(int sel) {
@@ -806,6 +883,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_CLOSE) DestroyWindow(g_main);
         else if (id == ID_SAVE) {
             if (save_fields()) status("Settings saved.");
+        } else if (id >= ID_OPEN_BASE && id < ID_OPEN_BASE + 4) {
+            on_open(id - ID_OPEN_BASE);
         } else if (id >= ID_BROWSE_BASE && id < ID_BROWSE_BASE + NFIELDS) {
             on_browse(id - ID_BROWSE_BASE);
         } else if (id >= ID_FIELD_BASE && id < ID_FIELD_BASE + NFIELDS) {
@@ -872,7 +951,10 @@ static void build_ui(void) {
         TCITEMA ti = {.mask = TCIF_TEXT, .pszText = (char*)kPageNames[i]};
         TabCtrl_InsertItem(g_tabs, i, &ti);
         g_pages[i] = make_page();
-        build_page(i);
+        {
+            int end = build_page(i);
+            if (i == PG_PLAY) build_play_shortcuts(g_pages[i], end);
+        }
     }
     place_pages();
     show_page(0);
