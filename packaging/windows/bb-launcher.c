@@ -18,7 +18,6 @@
 
 #include "bb-settings.h"
 
-#define ID_RUN 112
 #define ID_SAVE 113
 #define ID_CLOSE 114
 #define ID_STATUS 116
@@ -38,7 +37,7 @@
 /* Layout, in unscaled pixels (S() applies the DPI). Compact and classic: a property-sheet style
  * window, 8 pt dialog font, group boxes, no visual styles (see bb-launcher.manifest). */
 #define WIN_W 420
-#define WIN_H 430
+#define WIN_H 392
 #define TABS_X 6
 #define TABS_Y 6
 #define TABS_W 408
@@ -433,6 +432,22 @@ static void load_fields(void) {
 }
 
 /* Writes bbport.ini (unknown lines kept) and settings.json (unknown keys kept). */
+/* What every field holds right now, to tell whether anything changed since the last load or
+ * save: with no Save button on most tabs, closing asks before dropping changes. */
+static char g_snapshot[32768];
+
+static void snapshot(char* out, size_t n) {
+    out[0] = 0;
+    char v[1024];
+    for (int i = 0; i < NFIELDS; ++i) {
+        if (g_fields[i].kind == K_HEAD) continue;
+        field_value(&g_fields[i], v, sizeof(v));
+        size_t used = strlen(out);
+        if (used + strlen(v) + 4 >= n) break;
+        sprintf(out + used, "%s\n", v);
+    }
+}
+
 static int save_fields(void) {
     char rest[16384] = "", v[1024];
     FILE* f = fopen(g_ini, "r");
@@ -473,6 +488,7 @@ static int save_fields(void) {
         status("Cannot write settings.json");
         return 0;
     }
+    snapshot(g_snapshot, sizeof(g_snapshot));
     return 1;
 }
 
@@ -576,7 +592,6 @@ static void frozen_runtime(const char* dir, char* out, size_t n) {
 }
 
 static void set_run_enabled(BOOL on) {
-    EnableWindow(GetDlgItem(g_main, ID_RUN), on);
     EnableWindow(GetDlgItem(g_pages[PG_PLAY], ID_PLAY), on);
 }
 
@@ -878,8 +893,8 @@ static int build_play_banner(HWND page) {
     return 60;
 }
 
-/* Play: shortcuts to the things that are looked at most when something goes wrong, and a big
- * Play button under them. */
+/* Play: shortcuts to the things that are looked at most when something goes wrong, and the
+ * big Play / Save / Close buttons under them. */
 static void build_play_shortcuts(HWND page, int y) {
     static const char* names[4] = {"Open game folder", "Open saves folder", "Open last run log",
                                    "Open bbport.ini"};
@@ -889,8 +904,14 @@ static void build_play_shortcuts(HWND page, int y) {
     SendMessageA(group, WM_SETFONT, (WPARAM)g_font, 1);
     for (int i = 0; i < 4; ++i)
         w_button(page, ID_OPEN_BASE + i, names[i], 14 + (i % 2) * 188, y + 16 + (i / 2) * 28, 182, 23);
-    HWND play = w_button(page, ID_PLAY, "&Play Bloodborne", 6, y + 74 + 8, PAGE_W - 12, 42);
+    int by = y + 74 + 8;
+    HWND play = w_button(page, ID_PLAY, "&Play Bloodborne", 6, by, 192, 42);
+    HWND save = w_button(page, ID_SAVE, "&Save", 204, by, 90, 42);
+    HWND close = w_button(page, ID_CLOSE, "&Close", 300, by, 90, 42);
     SendMessageA(play, WM_SETFONT, (WPARAM)g_play_font, 1);
+    SendMessageA(save, WM_SETFONT, (WPARAM)g_play_font, 1);
+    SendMessageA(close, WM_SETFONT, (WPARAM)g_play_font, 1);
+    SendMessageA(play, BM_SETSTYLE, BS_DEFPUSHBUTTON, TRUE);
 }
 
 static void show_page(int sel) {
@@ -912,8 +933,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_COMMAND: {
         int id = LOWORD(wp);
-        if (id == ID_RUN || id == ID_PLAY) on_run();
-        else if (id == ID_CLOSE) DestroyWindow(g_main);
+        if (id == ID_PLAY) on_run();
+        else if (id == ID_CLOSE) SendMessageA(g_main, WM_CLOSE, 0, 0);
         else if (id == ID_SAVE) {
             if (save_fields()) status("Settings saved.");
         } else if (id >= ID_OPEN_BASE && id < ID_OPEN_BASE + 4) {
@@ -953,7 +974,16 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         break;
     }
     case WM_CLOSE:
-        if (w == g_main) DestroyWindow(w);
+        if (w == g_main) {
+            static char now[32768];
+            snapshot(now, sizeof(now));
+            if (strcmp(now, g_snapshot) != 0) {
+                int answer = MessageBoxA(g_main, "Save your changes before closing?", "Bloodborne",
+                                         MB_YESNOCANCEL | MB_ICONQUESTION);
+                if (answer == IDCANCEL || (answer == IDYES && !save_fields())) return 0;
+            }
+            DestroyWindow(w);
+        }
         break;
     case WM_DESTROY:
         if (w == g_main) PostQuitMessage(0);
@@ -1003,15 +1033,10 @@ static void build_ui(void) {
     place_pages();
     show_page(0);
 
-    /* Buttons right-aligned as in a classic dialog; a sunken status line below. */
-    int by = TABS_Y + TABS_H + 8;
-    w_button(g_main, ID_RUN, "&Run", WIN_W - 6 - 3 * 75 - 2 * 6, by, 75, 23);
-    w_button(g_main, ID_SAVE, "&Save", WIN_W - 6 - 2 * 75 - 6, by, 75, 23);
-    w_button(g_main, ID_CLOSE, "&Close", WIN_W - 6 - 75, by, 75, 23);
-    SendMessageA(GetDlgItem(g_main, ID_RUN), BM_SETSTYLE, BS_DEFPUSHBUTTON, TRUE);
+    /* A sunken status line under the tabs. */
     g_status = CreateWindowA("STATIC", " Ready.", WS_CHILD | WS_VISIBLE | SS_SUNKEN |
-                             SS_LEFTNOWORDWRAP, S(TABS_X), S(by + 29), S(TABS_W), S(18), g_main,
-                             (HMENU)(INT_PTR)ID_STATUS, NULL, NULL);
+                             SS_LEFTNOWORDWRAP, S(TABS_X), S(TABS_Y + TABS_H + 6), S(TABS_W), S(18),
+                             g_main, (HMENU)(INT_PTR)ID_STATUS, NULL, NULL);
     SendMessageA(g_status, WM_SETFONT, (WPARAM)g_font, 1);
 }
 
@@ -1078,6 +1103,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
                            rc.bottom - rc.top, NULL, NULL, inst, NULL);
     build_ui();
     load_fields();
+    snapshot(g_snapshot, sizeof(g_snapshot));
     /* --page=N (0-based) opens on that tab. */
     const char* opt = cmd ? strstr(cmd, "--page=") : NULL;
     if (opt) {
