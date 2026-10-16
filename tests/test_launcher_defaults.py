@@ -13,20 +13,20 @@ class LauncherDefaultsTests(unittest.TestCase):
     def c_defaults(self):
         text = (ROOT / 'packaging' / 'windows' / 'bb-launcher.c').read_text(encoding='utf-8')
         return {key: default for key, default in
-                re.findall(r'ini_get\("(launcher_(?:stats|async))",\s*v,\s*sizeof\(v\),\s*"(\d)"\)', text)}
+                re.findall(r'app_get\("(frame_stats|async_pipelines)",\s*"launcher_\w+",\s*v,\s*sizeof\(v\),\s*"(\d)"\)', text)}
 
     def test_frame_stats_default_matches(self):
         c = self.c_defaults()
-        self.assertEqual(self.py_defaults()['frame_stats'] == 'True', c['launcher_stats'] == '1')
+        self.assertEqual(self.py_defaults()['frame_stats'] == 'True', c['frame_stats'] == '1')
 
     def test_async_default_matches(self):
         c = self.c_defaults()
-        self.assertEqual(self.py_defaults()['async_pipelines'] == 'True', c['launcher_async'] == '1')
+        self.assertEqual(self.py_defaults()['async_pipelines'] == 'True', c['async_pipelines'] == '1')
 
     def test_c_launcher_persists_both(self):
         text = (ROOT / 'packaging' / 'windows' / 'bb-launcher.c').read_text(encoding='utf-8')
-        self.assertIn('launcher_async=%d', text)
-        self.assertIn('launcher_stats=%d', text)
+        self.assertIn('cfg_set_bool("async_pipelines"', text)
+        self.assertIn('cfg_set_bool("frame_stats"', text)
 
 
 if __name__ == '__main__':

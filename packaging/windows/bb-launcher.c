@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bb-settings.h"
+
 #define ID_GAME_EDIT 101
 #define ID_BROWSE 102
 #define ID_UPSCALER 103
@@ -193,6 +195,14 @@ static void ini_get(const char* key, char* out, size_t n, const char* dflt) {
     fclose(f);
 }
 
+/* A launcher option: settings.json (shared with bb-runtime) first, then the launcher_* key older
+ * versions of this launcher kept in bbport.ini, then the default. Booleans read as "1"/"0". */
+static void app_get(const char* key, const char* legacy, char* out, size_t n, const char* dflt) {
+    if (cfg_get_str(key, out, n, NULL)) return;
+    if (legacy && legacy[0]) ini_get(legacy, out, n, dflt);
+    else snprintf(out, n, "%s", dflt);
+}
+
 static int combo_index(const char** vals, int n, const char* v, int dflt) {
     for (int i = 0; i < n; ++i)
         if (!strcmp(v, vals[i])) return i;
@@ -202,7 +212,7 @@ static int combo_index(const char** vals, int n, const char* v, int dflt) {
 static void load_settings(void) {
     char v[512], game[MAX_PATH];
     /* Remembered folder first; fall back to a CUSA03173 next to the checkout. */
-    ini_get("launcher_game_dir", game, sizeof(game), "");
+    app_get("game_dir", "launcher_game_dir", game, sizeof(game), "");
     DWORD attrs = GetFileAttributesA(game);
     if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
         snprintf(game, sizeof(game), "%s\\..\\CUSA03173", g_root);
@@ -222,20 +232,22 @@ static void load_settings(void) {
     set_combo(ID_PRESET, (p < 0 || p > 4) ? 0 : p);
     ini_get("output_res", v, sizeof(v), "1920x1080");
     set_combo(ID_OUTPUT, combo_index(kOutputs, 4, v, 1));
-    ini_get("launcher_fps", v, sizeof(v), "60");
+    app_get("fps_mode", "launcher_fps", v, sizeof(v), "60");
     set_combo(ID_FPS, combo_index(kFps, 4, v, 1));
     ini_get("skip_intro", v, sizeof(v), "1");
     set_check(ID_SKIP_INTRO, atoi(v) != 0);
     ini_get("show_fps", v, sizeof(v), "1");
     set_check(ID_FPS_SHOW, atoi(v) != 0);
-    ini_get("launcher_fullscreen", v, sizeof(v), "0");
+    app_get("fullscreen", "launcher_fullscreen", v, sizeof(v), "0");
     set_check(ID_FULLSCREEN, atoi(v) != 0);
-    ini_get("launcher_user_dir", v, sizeof(v), "");
+    app_get("user_dir", "launcher_user_dir", v, sizeof(v), "");
     set_text(ID_USER_EDIT, v);
-    ini_get("launcher_async", v, sizeof(v), "0");
+    app_get("async_pipelines", "launcher_async", v, sizeof(v), "0");
     set_check(ID_ASYNC, atoi(v) != 0);
-    ini_get("launcher_stats", v, sizeof(v), "1");
+    app_get("frame_stats", "launcher_stats", v, sizeof(v), "1");
     set_check(ID_STATS, atoi(v) != 0);
+    app_get("extra_env", "", v, sizeof(v), "");
+    set_text(ID_ENV_EDIT, v);
     /* Tabs. */
     for (int i = 0; i < 7; ++i) {
         char d[4];
@@ -249,28 +261,28 @@ static void load_settings(void) {
         SendMessageA(GetDlgItem(g_pages[1], ID_GP_BASE + i), BM_SETCHECK,
                      atoi(v) ? BST_CHECKED : BST_UNCHECKED, 0);
     }
-    ini_get("launcher_mods_on", v, sizeof(v), "1");
+    app_get("mods_enabled", "launcher_mods_on", v, sizeof(v), "1");
     SendMessageA(GetDlgItem(g_pages[2], ID_MODS_ON), BM_SETCHECK,
                  atoi(v) ? BST_CHECKED : BST_UNCHECKED, 0);
-    ini_get("launcher_mods_dir", v, sizeof(v), "");
+    app_get("mods_dir", "launcher_mods_dir", v, sizeof(v), "");
     SetWindowTextA(GetDlgItem(g_pages[2], ID_MODS_EDIT), v);
-    ini_get("launcher_patches_dir", v, sizeof(v), "");
+    app_get("patches_dir", "launcher_patches_dir", v, sizeof(v), "");
     SetWindowTextA(GetDlgItem(g_pages[2], ID_PATCH_EDIT), v);
-    ini_get("launcher_present", v, sizeof(v), "Mailbox");
+    app_get("present_mode", "launcher_present", v, sizeof(v), "Mailbox");
     SendMessageA(GetDlgItem(g_pages[3], ID_PRESENT), CB_SETCURSEL,
                  (WPARAM)combo_index(kPresent, 4, v, 0), 0);
-    ini_get("launcher_draw_pipe", v, sizeof(v), "");
+    app_get("draw_pipe", "launcher_draw_pipe", v, sizeof(v), "");
     SendMessageA(GetDlgItem(g_pages[3], ID_DRAWPIPE), CB_SETCURSEL,
                  (WPARAM)combo_index(kPipe, 3, v, 0), 0);
-    ini_get("launcher_readbacks", v, sizeof(v), "");
+    app_get("readbacks", "launcher_readbacks", v, sizeof(v), "");
     SendMessageA(GetDlgItem(g_pages[3], ID_READBACKS), CB_SETCURSEL,
                  (WPARAM)combo_index(kRb, 3, v, 0), 0);
-    ini_get("launcher_ahead", v, sizeof(v), "");
+    app_get("frames_ahead", "launcher_ahead", v, sizeof(v), "");
     SendMessageA(GetDlgItem(g_pages[3], ID_AHEAD), CB_SETCURSEL,
                  (WPARAM)combo_index(kAhead, 3, v, 0), 0);
-    ini_get("launcher_cap", v, sizeof(v), "");
+    app_get("frame_cap", "launcher_cap", v, sizeof(v), "");
     SendMessageA(GetDlgItem(g_pages[3], ID_CAP), CB_SETCURSEL,
-                 (WPARAM)combo_index(kAhead, 3, v, 0), 0);
+                 (WPARAM)combo_index(kCaps, 6, v, 0), 0);
 }
 
 static int is_managed(const char* line) {
@@ -300,6 +312,35 @@ static int combo_val(HWND page, int id, const char** vals, int n) {
     int i = (int)SendMessageA(GetDlgItem(page, id), CB_GETCURSEL, 0, 0);
     (void)n;
     return i;
+}
+
+/* Options only bb-runtime has pages for so far: applied from the shared settings.json so a game
+ * started here behaves as it does from there (language, voice, name, DLC, HDR, validation). */
+static void shared_env(void) {
+    char v[MAX_PATH], path[MAX_PATH];
+    if (cfg_get_str("dlc_dir", v, sizeof(v), NULL) && v[0]) SetEnvironmentVariableA("BB_DLC_DIR", v);
+    snprintf(path, sizeof(path), "%s\\mods.json", g_root);
+    SetEnvironmentVariableA("BB_MODS_CONFIG", path);
+    snprintf(path, sizeof(path), "%s\\patches.json", g_root);
+    SetEnvironmentVariableA("BB_PATCHES_CONFIG", path);
+    snprintf(path, sizeof(path), "%s\\mods", g_root);
+    SetEnvironmentVariableA("BB_MODS_DIR", path);
+    snprintf(path, sizeof(path), "%s\\patches", g_root);
+    SetEnvironmentVariableA("BB_PATCHES_DIR", path);
+    cfg_get_str("language", v, sizeof(v), "1");
+    SetEnvironmentVariableA("BB_LANGUAGE", v);
+    cfg_get_str("voice_language", v, sizeof(v), "auto");
+    SetEnvironmentVariableA("BB_VOICE_LANGUAGE", v);
+    if (cfg_get_str("player_name", v, sizeof(v), NULL)) {
+        char* b = v;
+        while (*b == ' ') ++b;
+        size_t len = strlen(b);
+        while (len && b[len - 1] == ' ') b[--len] = 0;
+        if (*b) SetEnvironmentVariableA("BB_USER_NAME", b);
+    }
+    if (cfg_get_str("hdr", v, sizeof(v), "0") && !strcmp(v, "1")) SetEnvironmentVariableA("BB_HDR", "1");
+    if (cfg_get_str("vk_validation", v, sizeof(v), "0") && !strcmp(v, "1"))
+        SetEnvironmentVariableA("BB_VK_VALIDATION", "1");
 }
 
 static void save_settings(void) {
@@ -353,16 +394,28 @@ static void save_settings(void) {
     int cp = combo_val(g_pages[3], ID_CAP, kCaps, 6);
     int fi = get_combo(ID_FPS);
     if (fi < 0) fi = 1;
-    fprintf(f, "launcher_mods_on=%d\nlauncher_mods_dir=%s\nlauncher_patches_dir=%s\n"
-               "launcher_present=%s\nlauncher_draw_pipe=%s\nlauncher_readbacks=%s\n"
-               "launcher_ahead=%s\nlauncher_cap=%s\n"
-               "launcher_game_dir=%s\nlauncher_user_dir=%s\nlauncher_fps=%s\n"
-               "launcher_fullscreen=%d\nlauncher_async=%d\nlauncher_stats=%d\n%s",
-            mods_on, mods, patches, pr >= 0 ? kPresent[pr] : "Mailbox", dp > 0 ? kPipe[dp] : "",
-            rb > 0 ? kRb[rb] : "", ah > 0 ? kAhead[ah] : "", cp > 0 ? kCaps[cp] : "", game,
-            user, kFps[fi], get_check(ID_FULLSCREEN), get_check(ID_ASYNC), get_check(ID_STATS),
-            rest);
+    fputs(rest, f);
     fclose(f);
+
+    /* The launcher options go to settings.json, where bb-runtime reads them too. */
+    cfg_set_str("game_dir", game);
+    cfg_set_str("user_dir", user);
+    cfg_set_str("fps_mode", kFps[fi]);
+    cfg_set_bool("fullscreen", get_check(ID_FULLSCREEN));
+    cfg_set_bool("async_pipelines", get_check(ID_ASYNC));
+    cfg_set_bool("frame_stats", get_check(ID_STATS));
+    cfg_set_bool("gpu_profile", get_check(ID_STATS));
+    cfg_set_bool("mods_enabled", mods_on);
+    cfg_set_str("mods_dir", mods);
+    cfg_set_str("patches_dir", patches);
+    cfg_set_str("present_mode", pr >= 0 ? kPresent[pr] : "Mailbox");
+    cfg_set_str("draw_pipe", dp > 0 ? kPipe[dp] : "");
+    cfg_set_str("readbacks", rb > 0 ? kRb[rb] : "");
+    cfg_set_str("frames_ahead", ah > 0 ? kAhead[ah] : "");
+    cfg_set_str("frame_cap", cp > 0 ? kCaps[cp] : "");
+    cfg_set_str("extra_env", env);
+    if (!cfg_save()) status("Cannot write settings.json");
+    shared_env();
 
     SetEnvironmentVariableA("BB_GAME_DIR", game);
     SetEnvironmentVariableA("BB_FPS", kFps[fi]);
@@ -814,6 +867,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     snprintf(g_root, sizeof(g_root), "%s", norm);
     snprintf(g_ini, sizeof(g_ini), "%s\\bbport.ini", g_root);
     snprintf(g_runpy, sizeof(g_runpy), "%s\\run.py", g_root);
+    {
+        const char* appdata = getenv("APPDATA");
+        snprintf(g_cfg, sizeof(g_cfg), "%s\\bbport-launcher\\settings.json",
+                 appdata && *appdata ? appdata : g_root);
+        cfg_load();
+    }
 
     WNDCLASSA wc = {.lpfnWndProc = wndproc,
                     .hInstance = inst,
