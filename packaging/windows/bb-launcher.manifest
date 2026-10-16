@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!-- bb-launcher: UTF-8 paths, long paths, per-monitor DPI, and visual styles
-     (Common-Controls v6: native hover/press animations on standard buttons). -->
+<!-- bb-launcher: UTF-8 paths, long paths and per-monitor DPI. No Common-Controls v6 dependency
+     on purpose: without it the controls keep their classic (Windows 2000/XP-era) look. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity type="win32" name="bbport.bb-launcher" version="1.0.0.0"/>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
@@ -15,10 +15,4 @@
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
     </application>
   </compatibility>
-  <dependency>
-    <dependentAssembly>
-      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
-          processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
-    </dependentAssembly>
-  </dependency>
 </assembly>

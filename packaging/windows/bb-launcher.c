@@ -19,6 +19,7 @@
 
 #define ID_RUN 112
 #define ID_SAVE 113
+#define ID_CLOSE 114
 #define ID_STATUS 116
 #define ID_TABS 117
 #define ID_GAME_NOTE 120
@@ -26,18 +27,21 @@
 #define ID_BROWSE_BASE 2000 /* folder field i: browse button 2000+i */
 #define ID_VALUE_BASE 3000  /* slider field i: value text 3000+i */
 
-/* Layout, in unscaled pixels (S() applies the DPI). */
-#define WIN_W 556
-#define WIN_H 604
-#define TABS_X 10
-#define TABS_Y 54
-#define TABS_W 536
-#define TABS_H 470
-#define PAGE_W 512
-#define LABEL_X 12
-#define LABEL_W 158
-#define CTRL_X 176
-#define CTRL_W 320
+/* Layout, in unscaled pixels (S() applies the DPI). Compact and classic: a property-sheet style
+ * window, 8 pt dialog font, group boxes, no visual styles (see bb-launcher.manifest). */
+#define WIN_W 420
+#define WIN_H 430
+#define TABS_X 6
+#define TABS_Y 6
+#define TABS_W 408
+#define TABS_H 356
+#define PAGE_W 396
+#define LABEL_X 10
+#define LABEL_W 118
+#define CTRL_X 132
+#define CTRL_W 252
+#define ROW_H 25
+#define CHECK_H 18
 
 /* --- option lists: stored value + shown text, the same values bb-runtime stores --- */
 static const char* kUpscalerV[] = {"dlss", "fsr4", "fsr411", "fsr3", "taa", "off"};
@@ -201,14 +205,14 @@ static HANDLE g_child;
 /* DPI scaling: every layout pixel goes through S(). The window declares
  * PerMonitorV2, so on 125/150% displays fixed pixels would overlap. */
 static int g_dpi = 96;
-static HFONT g_font, g_bold;
+static HFONT g_font;
 static int S(int v) {
     return (v * g_dpi + 48) / 96;
 }
 
 /* --- small widget helpers (parent = any container) --- */
 static HWND w_label(HWND p, int id, const char* t, int x, int y, int w) {
-    HWND h = CreateWindowA("STATIC", t, WS_CHILD | WS_VISIBLE, S(x), S(y), S(w), S(16), p,
+    HWND h = CreateWindowA("STATIC", t, WS_CHILD | WS_VISIBLE, S(x), S(y), S(w), S(14), p,
                            (HMENU)(INT_PTR)id, NULL, NULL);
     SendMessageA(h, WM_SETFONT, (WPARAM)g_font, 1);
     return h;
@@ -216,7 +220,7 @@ static HWND w_label(HWND p, int id, const char* t, int x, int y, int w) {
 
 static HWND w_edit(HWND p, int id, int x, int y, int w) {
     HWND h = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                             ES_AUTOHSCROLL, S(x), S(y), S(w), S(22), p, (HMENU)(INT_PTR)id,
+                             ES_AUTOHSCROLL, S(x), S(y), S(w), S(21), p, (HMENU)(INT_PTR)id,
                              NULL, NULL);
     SendMessageA(h, WM_SETFONT, (WPARAM)g_font, 1);
     return h;
@@ -232,7 +236,7 @@ static HWND w_combo(HWND p, int id, int x, int y, int w, const char* const* item
 
 static HWND w_check(HWND p, int id, const char* t, int x, int y, int w) {
     HWND h = CreateWindowA("BUTTON", t, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-                           S(x), S(y), S(w), S(20), p, (HMENU)(INT_PTR)id, NULL, NULL);
+                           S(x), S(y), S(w), S(16), p, (HMENU)(INT_PTR)id, NULL, NULL);
     SendMessageA(h, WM_SETFONT, (WPARAM)g_font, 1);
     return h;
 }
@@ -714,57 +718,69 @@ static void place_pages(void) {
                      SWP_NOZORDER);
 }
 
+/* A group box opens at a K_HEAD field and is sized when the next one (or the page) ends. */
+static void end_group(HWND group, int group_y, int* y) {
+    int h = *y - group_y + 6;
+    SetWindowPos(group, NULL, S(6), S(group_y), S(PAGE_W - 12), S(h), SWP_NOZORDER);
+    *y = group_y + h;
+}
+
 static void build_page(int pg) {
     HWND page = g_pages[pg];
-    int y = 10;
+    int y = 8, ix = 0; /* ix: indent inside a group box */
+    HWND group = NULL;
+    int group_y = 0;
     for (int i = 0; i < NFIELDS; ++i) {
         Field* f = &g_fields[i];
         if (f->page != pg) continue;
         f->id = ID_FIELD_BASE + i;
         switch (f->kind) {
-        case K_HEAD: {
-            if (y > 10) y += 8;
-            HWND h = w_label(page, 0, f->label, LABEL_X, y, PAGE_W - 24);
-            SendMessageA(h, WM_SETFONT, (WPARAM)g_bold, 1);
-            y += 22;
+        case K_HEAD:
+            if (group) end_group(group, group_y, &y);
+            if (y > 8) y += 4;
+            group_y = y;
+            group = CreateWindowA("BUTTON", f->label, WS_CHILD | WS_VISIBLE | BS_GROUPBOX, S(6),
+                                  S(y), S(PAGE_W - 12), S(40), page, NULL, NULL, NULL);
+            SendMessageA(group, WM_SETFONT, (WPARAM)g_font, 1);
+            y += 16;
+            ix = 8;
             break;
-        }
         case K_CHECK:
-            f->hwnd = w_check(page, f->id, f->label, LABEL_X, y, PAGE_W - 24);
-            y += 23;
+            f->hwnd = w_check(page, f->id, f->label, LABEL_X + ix, y, PAGE_W - 24 - ix);
+            y += CHECK_H;
             break;
         case K_COMBO:
             w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
             f->hwnd = w_combo(page, f->id, CTRL_X, y, CTRL_W, f->labels, f->n);
-            y += 29;
+            y += ROW_H;
             break;
         case K_TEXT:
             w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
             f->hwnd = w_edit(page, f->id, CTRL_X, y, CTRL_W);
-            y += 29;
+            y += ROW_H;
             break;
         case K_FOLDER:
             w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
-            f->hwnd = w_edit(page, f->id, CTRL_X, y, CTRL_W - 50);
-            w_button(page, ID_BROWSE_BASE + i, "...", CTRL_X + CTRL_W - 44, y - 1, 44, 24);
-            y += 29;
+            f->hwnd = w_edit(page, f->id, CTRL_X, y, CTRL_W - 52);
+            w_button(page, ID_BROWSE_BASE + i, "Browse...", CTRL_X + CTRL_W - 48, y - 1, 48, 23);
+            y += ROW_H;
             if (!strcmp(f->key, "game_dir")) {
-                w_label(page, ID_GAME_NOTE, "", CTRL_X, y - 2, CTRL_W);
-                y += 22;
+                w_label(page, ID_GAME_NOTE, "", CTRL_X, y - 3, CTRL_W);
+                y += 16;
             }
             break;
-        case K_SLIDER: {
+        case K_SLIDER:
             w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
             f->hwnd = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                                    TBS_HORZ | TBS_NOTICKS, S(CTRL_X), S(y), S(CTRL_W - 56), S(26),
+                                    TBS_HORZ | TBS_NOTICKS, S(CTRL_X), S(y), S(CTRL_W - 40), S(22),
                                     page, (HMENU)(INT_PTR)f->id, NULL, NULL);
             SendMessageA(f->hwnd, TBM_SETRANGE, TRUE, MAKELPARAM(0, 40));
-            w_label(page, ID_VALUE_BASE + i, "0.50", CTRL_X + CTRL_W - 46, y + 4, 46);
-            y += 29;
+            w_label(page, ID_VALUE_BASE + i, "0.50", CTRL_X + CTRL_W - 32, y + 4, 32);
+            y += ROW_H;
             break;
         }
-        }
     }
+    if (group) end_group(group, group_y, &y);
 }
 
 static void show_page(int sel) {
@@ -787,6 +803,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     case WM_COMMAND: {
         int id = LOWORD(wp);
         if (id == ID_RUN) on_run();
+        else if (id == ID_CLOSE) DestroyWindow(g_main);
         else if (id == ID_SAVE) {
             if (save_fields()) status("Settings saved.");
         } else if (id >= ID_BROWSE_BASE && id < ID_BROWSE_BASE + NFIELDS) {
@@ -834,24 +851,17 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     return DefWindowProcA(w, m, wp, lp);
 }
 
-static HFONT make_font(int bold) {
-    LOGFONTA lf;
-    GetObjectA(GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
-    lf.lfHeight = lf.lfHeight * g_dpi / 96;
-    lf.lfWidth = 0;
-    if (bold) lf.lfWeight = FW_BOLD;
+/* The classic dialog font: MS Shell Dlg 8 pt (Microsoft Sans Serif on current Windows). */
+static HFONT make_font(void) {
+    LOGFONTA lf = {0};
+    lf.lfHeight = -MulDiv(8, g_dpi, 72);
+    lf.lfWeight = FW_NORMAL;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    snprintf(lf.lfFaceName, sizeof(lf.lfFaceName), "MS Shell Dlg");
     return CreateFontIndirectA(&lf);
 }
 
 static void build_ui(void) {
-    HWND title = CreateWindowA("STATIC", "Bloodborne bbport", WS_CHILD | WS_VISIBLE, S(14), S(10),
-                               S(400), S(24), g_main, NULL, NULL, NULL);
-    HFONT big = CreateFontA(S(18), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                            DEFAULT_PITCH, "MS Shell Dlg");
-    SendMessageA(title, WM_SETFONT, (WPARAM)big, 1);
-    w_label(g_main, 0, "Native port launcher: set up the game, then Run.", 14, 34, 500);
-
     INITCOMMONCONTROLSEX icc = {.dwSize = sizeof(icc), .dwICC = ICC_TAB_CLASSES | ICC_BAR_CLASSES};
     InitCommonControlsEx(&icc);
     g_tabs = CreateWindowA(WC_TABCONTROLA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TABS,
@@ -867,11 +877,15 @@ static void build_ui(void) {
     place_pages();
     show_page(0);
 
-    int by = TABS_Y + TABS_H + 10;
-    w_button(g_main, ID_RUN, "Run", 10, by, 130, 30);
-    w_button(g_main, ID_SAVE, "Save", 150, by, 100, 30);
-    g_status = CreateWindowA("STATIC", "Ready.", WS_CHILD | WS_VISIBLE, S(10), S(by + 38),
-                             S(TABS_W), S(16), g_main, (HMENU)(INT_PTR)ID_STATUS, NULL, NULL);
+    /* Buttons right-aligned as in a classic dialog; a sunken status line below. */
+    int by = TABS_Y + TABS_H + 8;
+    w_button(g_main, ID_RUN, "&Run", WIN_W - 6 - 3 * 75 - 2 * 6, by, 75, 23);
+    w_button(g_main, ID_SAVE, "&Save", WIN_W - 6 - 2 * 75 - 6, by, 75, 23);
+    w_button(g_main, ID_CLOSE, "&Close", WIN_W - 6 - 75, by, 75, 23);
+    SendMessageA(GetDlgItem(g_main, ID_RUN), BM_SETSTYLE, BS_DEFPUSHBUTTON, TRUE);
+    g_status = CreateWindowA("STATIC", " Ready.", WS_CHILD | WS_VISIBLE | SS_SUNKEN |
+                             SS_LEFTNOWORDWRAP, S(TABS_X), S(by + 29), S(TABS_W), S(18), g_main,
+                             (HMENU)(INT_PTR)ID_STATUS, NULL, NULL);
     SendMessageA(g_status, WM_SETFONT, (WPARAM)g_font, 1);
 }
 
@@ -922,8 +936,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         (UINT(WINAPI*)(void))GetProcAddress(user32, "GetDpiForSystem");
     g_dpi = get_system_dpi ? (int)get_system_dpi() : 96;
     if (g_dpi < 96) g_dpi = 96;
-    g_font = make_font(0);
-    g_bold = make_font(1);
+    g_font = make_font();
     RECT rc = {0, 0, S(WIN_W), S(WIN_H)};
     AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     g_main = CreateWindowA("BbLauncher", "Bloodborne", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
