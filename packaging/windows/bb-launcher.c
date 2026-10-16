@@ -114,14 +114,13 @@ typedef struct {
 static Field g_fields[] = {
     /* Play */
     FLD_FOLDER(PG_PLAY, ST_APP, "game_dir", "launcher_game_dir", "Game folder:"),
-    FLD_COMBO(PG_PLAY, ST_INI, "upscaler", "", "Upscaler:", kUpscalerV, kUpscalerL, "taa"),
-    FLD_COMBO(PG_PLAY, ST_INI, "preset", "", "Quality preset:", kPresetV, kPresetL, "0"),
-    FLD_COMBO(PG_PLAY, ST_INI, "output_res", "", "Output resolution:", kOutputV, kOutputL, "1920x1080"),
-    FLD_COMBO(PG_PLAY, ST_APP, "fps_mode", "launcher_fps", "Frame rate:", kFpsV, kFpsL, "60"),
-    FLD_CHECK(PG_PLAY, ST_APP, "fullscreen", "launcher_fullscreen", "Run in full screen", "0"),
     FLD_CHECK(PG_PLAY, ST_INI, "skip_intro", "", "Skip the intro logos and movie", "1"),
     FLD_CHECK(PG_PLAY, ST_INI, "show_fps", "", "Show the FPS counter in the game", "1"),
     /* Graphics */
+    FLD_COMBO(PG_GRAPHICS, ST_INI, "upscaler", "", "Upscaler:", kUpscalerV, kUpscalerL, "taa"),
+    FLD_COMBO(PG_GRAPHICS, ST_INI, "preset", "", "Quality preset:", kPresetV, kPresetL, "0"),
+    FLD_COMBO(PG_GRAPHICS, ST_INI, "output_res", "", "Output resolution:", kOutputV, kOutputL,
+              "1920x1080"),
     FLD_COMBO(PG_GRAPHICS, ST_INI, "hud_position", "", "HUD position (21:9):", kHudV, kHudL, "100"),
     FLD_COMBO(PG_GRAPHICS, ST_INI, "live_resolution", "", "Live resolution:", kLiveV, kLiveL, "auto"),
     FLD_CHECK(PG_GRAPHICS, ST_INI, "sharpen", "", "Sharpening (RCAS)", "1"),
@@ -129,11 +128,14 @@ static Field g_fields[] = {
     FLD_CHECK(PG_GRAPHICS, ST_INI, "object_motion", "", "Object motion vectors (about 10% FPS)", "1"),
     FLD_COMBO(PG_GRAPHICS, ST_INI, "model_lod", "", "Model detail (LOD):", kLodV, kLodL, "0"),
     /* Display */
-    FLD_COMBO(PG_DISPLAY, ST_APP, "frame_cap", "launcher_cap", "Frame cap (unlocked):", kCapV, kCapL, ""),
-    FLD_COMBO(PG_DISPLAY, ST_APP, "frames_ahead", "launcher_ahead", "Frames ahead of the GPU:", kAheadV,
-          kAheadL, ""),
+    FLD_COMBO(PG_DISPLAY, ST_APP, "fps_mode", "launcher_fps", "Frame rate:", kFpsV, kFpsL, "60"),
+    FLD_COMBO(PG_DISPLAY, ST_APP, "frame_cap", "launcher_cap", "Frame cap (unlocked):", kCapV, kCapL,
+              ""),
+    FLD_COMBO(PG_DISPLAY, ST_APP, "frames_ahead", "launcher_ahead", "Frames ahead of the GPU:",
+              kAheadV, kAheadL, ""),
+    FLD_CHECK(PG_DISPLAY, ST_APP, "fullscreen", "launcher_fullscreen", "Run in full screen", "0"),
     FLD_COMBO(PG_DISPLAY, ST_APP, "present_mode", "launcher_present", "Presentation:", kPresentV,
-          kPresentL, "Mailbox"),
+              kPresentL, "Mailbox"),
     FLD_CHECK(PG_DISPLAY, ST_APP, "hdr", "", "Allow HDR output", "0"),
     /* Game */
     FLD_FOLDER(PG_GAME, ST_APP, "user_dir", "launcher_user_dir", "Saves folder:"),
