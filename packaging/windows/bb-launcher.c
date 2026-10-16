@@ -18,6 +18,7 @@
 #include <time.h>
 
 #include "bb-settings.h"
+#include "bb-update.h"
 
 #define ID_SAVE 113
 #define ID_CLOSE 114
@@ -44,6 +45,20 @@
 #define ID_TROPHY_REFRESH 5202
 #define ID_TROPHY_SUMMARY 5203
 #define ID_TROPHY_DETAIL 5204
+#define ID_UPDATE_LABEL 5300
+#define ID_UPDATE_INSTALL 5301
+#define ID_UPDATE_NOTES 5302
+#define ID_UPDATE_CHECK 5303
+#define WM_UPDATE_FOUND (WM_APP + 1)    /* wParam: 1 when asked for by hand; lParam: ReleaseInfo* or NULL */
+#define WM_UPDATE_PROGRESS (WM_APP + 2) /* wParam: percent */
+#define WM_UPDATE_FAILED (WM_APP + 3)   /* lParam: static message */
+#define WM_UPDATE_READY (WM_APP + 4)    /* the installer was started: close */
+
+/* This build, and where newer ones come from: the releases of the fork. The tag's numbers are
+ * the version (windows-v1.8.0 -> 1.8.0). BB_RELEASES_API overrides the address (tests). */
+#define BB_VERSION "1.7.5"
+#define BB_RELEASES_API "https://api.github.com/repos/Slopinator99/bloodborne_pc_async/releases/latest"
+#define BB_RELEASES_PAGE "https://github.com/Slopinator99/bloodborne_pc_async/releases/latest"
 #define ID_FIELD_BASE 1000  /* field i: control 1000+i */
 #define ID_BROWSE_BASE 2000 /* folder field i: browse button 2000+i */
 #define ID_VALUE_BASE 3000  /* slider field i: value text 3000+i */
@@ -212,6 +227,7 @@ static Field g_fields[] = {
     FLD_COMBO(PG_ADV, ST_APP, "readbacks", "launcher_readbacks", "GPU readbacks:", kReadbackV, kReadbackL, ""),
     FLD_CHECK(PG_ADV, ST_APP, "async_pipelines", "launcher_async", "Async pipeline compilation (experimental)", "0"),
     FLD_CHECK(PG_ADV, ST_APP, "frame_stats", "launcher_stats", "Frame statistics + GPU profile in the log", "1"),
+    FLD_CHECK(PG_ADV, ST_APP, "check_updates", "", "Check for updates when the launcher starts", "1"),
     FLD_CHECK(PG_ADV, ST_APP, "vk_validation", "", "Vulkan validation layers (slow)", "0"),
     FLD_TEXT(PG_ADV, ST_APP, "extra_env", "Extra environment:", ""),
 };
@@ -224,6 +240,10 @@ static const char* kLegacyKeys[] = {
     "launcher_mods_on",  "launcher_mods_dir",  "launcher_patches_dir", "launcher_present",
     "launcher_draw_pipe", "launcher_readbacks", "launcher_ahead",     "launcher_cap",
     "launcher_async",    "launcher_stats"};
+
+/* Never replaced by an update (the Python launcher's list, plus this launcher's own log). */
+static const char* kUserFiles[] = {"user", "out", "mods", "bbport.ini", "input.ini", "mods.json",
+                                   "patches.json", "last_run.log", "launcher-run.log", NULL};
 
 static HWND g_main, g_status, g_tabs;
 static HWND g_pages[PG_COUNT];
@@ -1146,6 +1166,190 @@ static void on_browse(int index) {
 
 static void log_path(char* out, size_t n);
 
+/* --- Updates (bb-update.h): check the fork's releases, download, unpack, hand over to the new
+ * launcher, which installs itself over this folder once we have closed --- */
+static ReleaseInfo g_release;
+static int g_update_found, g_update_busy;
+
+/* Whether two folder names are the same folder: absolute, long (not 8.3) names, no trailing
+ * slash, case ignored. */
+static int same_folder(const char* a, const char* b) {
+    char x[MAX_PATH], y[MAX_PATH], t[MAX_PATH];
+    const char* in[2] = {a, b};
+    char* out[2] = {x, y};
+    for (int i = 0; i < 2; ++i) {
+        if (!GetFullPathNameA(in[i], MAX_PATH, t, NULL)) snprintf(t, MAX_PATH, "%s", in[i]);
+        if (!GetLongPathNameA(t, out[i], MAX_PATH)) snprintf(out[i], MAX_PATH, "%s", t);
+        size_t len = strlen(out[i]);
+        while (len > 3 && out[i][len - 1] == '\\') out[i][--len] = 0;
+    }
+    return !_stricmp(x, y);
+}
+
+static int is_packaged(void) {
+    char exe[MAX_PATH];
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    *strrchr(exe, '\\') = 0;
+    return same_folder(exe, g_root);
+}
+
+static void update_say(const char* text) {
+    SetWindowTextA(GetDlgItem(g_pages[PG_PLAY], ID_UPDATE_LABEL), text);
+}
+
+static DWORD WINAPI update_check_thread(LPVOID manual) {
+    static char body[65536];
+    char url[512];
+    if (!GetEnvironmentVariableA("BB_RELEASES_API", url, sizeof(url))) snprintf(url, sizeof(url), "%s", BB_RELEASES_API);
+    int code = http_get(url, body, sizeof(body));
+    ReleaseInfo* info = calloc(1, sizeof(*info));
+    if (info && !(code == 200 && release_parse(body, info))) {
+        free(info);
+        info = NULL;
+        if (code == 404) { /* no release published yet: not an error, and only said when asked */
+            if (manual) PostMessageA(g_main, WM_UPDATE_FOUND, (WPARAM)manual | 2, 0);
+            return 0;
+        }
+    }
+    PostMessageA(g_main, WM_UPDATE_FOUND, (WPARAM)manual, (LPARAM)info);
+    return 0;
+}
+
+static void update_check(int manual) {
+    if (g_update_busy) return;
+    if (!manual && GetEnvironmentVariableA("BB_NO_UPDATE_CHECK", NULL, 0)) return;
+    HANDLE t = CreateThread(NULL, 0, update_check_thread, (LPVOID)(INT_PTR)manual, 0, NULL);
+    if (t) CloseHandle(t);
+}
+
+static void update_progress(int pct, void* ctx) {
+    (void)ctx;
+    PostMessageA(g_main, WM_UPDATE_PROGRESS, (WPARAM)pct, 0);
+}
+
+static DWORD WINAPI update_install_thread(LPVOID unused) {
+    (void)unused;
+    char dir[MAX_PATH], zip[MAX_PATH], fresh[MAX_PATH], exe[MAX_PATH], cmd[MAX_PATH * 3];
+    GetTempPathA(sizeof(dir), dir);
+    strcat(dir, "bbport-update");
+    rmtree(dir);
+    CreateDirectoryA(dir, NULL);
+    snprintf(zip, sizeof(zip), "%s\\update.zip", dir);
+    snprintf(fresh, sizeof(fresh), "%s\\new", dir);
+    if (!http_download(g_release.zip_url, zip, update_progress, NULL)) {
+        PostMessageA(g_main, WM_UPDATE_FAILED, 0, (LPARAM) "The download did not complete.");
+        return 0;
+    }
+    PostMessageA(g_main, WM_UPDATE_PROGRESS, 101, 0); /* unpacking */
+    if (!extract_zip(zip, fresh)) {
+        PostMessageA(g_main, WM_UPDATE_FAILED, 0, (LPARAM) "The download could not be unpacked.");
+        return 0;
+    }
+    DeleteFileA(zip);
+    /* The new launcher; packages from before this launcher existed carry bb-runtime.exe, which
+     * understands the same --install-update. */
+    if (!find_file(fresh, "bb-launcher.exe", exe, sizeof(exe)) &&
+        !find_file(fresh, "bb-runtime.exe", exe, sizeof(exe)) &&
+        !find_file(fresh, "Bloodborne.exe", exe, sizeof(exe))) {
+        PostMessageA(g_main, WM_UPDATE_FAILED, 0, (LPARAM) "The download has no launcher in it.");
+        return 0;
+    }
+    char cwd[MAX_PATH];
+    snprintf(cwd, sizeof(cwd), "%s", exe);
+    *strrchr(cwd, '\\') = 0;
+    snprintf(cmd, sizeof(cmd), "\"%s\" --install-update \"%s\" %lu", exe, g_root, GetCurrentProcessId());
+    STARTUPINFOA si = {.cb = sizeof(si)};
+    PROCESS_INFORMATION pi;
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, cwd, &si, &pi)) {
+        PostMessageA(g_main, WM_UPDATE_FAILED, 0, (LPARAM) "The new version could not be started.");
+        return 0;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    PostMessageA(g_main, WM_UPDATE_READY, 0, 0);
+    return 0;
+}
+
+static void on_update_found(int manual, ReleaseInfo* info) {
+    char msg[200];
+    if (manual & 2) {
+        MessageBoxA(g_main, "No release has been published yet.", "Bloodborne", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!info) {
+        if (manual)
+            MessageBoxA(g_main, "Could not check for updates (no connection, or GitHub did not answer).",
+                        "Bloodborne", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (version_cmp(info->version, BB_VERSION) > 0) {
+        g_release = *info;
+        g_update_found = 1;
+        snprintf(msg, sizeof(msg), "Version %s is available.", info->version);
+        update_say(msg);
+        for (int id = ID_UPDATE_LABEL; id <= ID_UPDATE_NOTES; ++id)
+            ShowWindow(GetDlgItem(g_pages[PG_PLAY], id), SW_SHOW);
+        status(msg);
+    } else if (manual) {
+        snprintf(msg, sizeof(msg), "You have the latest version (%s).", BB_VERSION);
+        MessageBoxA(g_main, msg, "Bloodborne", MB_OK | MB_ICONINFORMATION);
+    }
+    free(info);
+}
+
+static void on_update_install(void) {
+    if (g_running) {
+        MessageBoxA(g_main, "Close the game before updating.", "Bloodborne", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!is_packaged() || !g_release.zip_url[0]) { /* a source tree updates with git */
+        ShellExecuteA(g_main, "open", g_release.page_url[0] ? g_release.page_url : BB_RELEASES_PAGE, NULL, NULL,
+                      SW_SHOWNORMAL);
+        return;
+    }
+    char ask[256];
+    snprintf(ask, sizeof(ask),
+             "Install version %s now? The launcher closes, installs it and opens again. "
+             "Saves, settings and mods are kept.", g_release.version);
+    if (MessageBoxA(g_main, ask, "Bloodborne", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    g_update_busy = 1;
+    EnableWindow(GetDlgItem(g_pages[PG_PLAY], ID_UPDATE_INSTALL), FALSE);
+    HANDLE t = CreateThread(NULL, 0, update_install_thread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+}
+
+/* --install-update <folder> <pid>: run by the downloaded version from its temporary folder.
+ * Waits for the old launcher to close, copies this version over the folder (never the user's
+ * files) and starts it. */
+static int install_update_main(const char* target, DWORD pid) {
+    char self[MAX_PATH], src[MAX_PATH], next[MAX_PATH];
+    GetModuleFileNameA(NULL, self, sizeof(self));
+    *strrchr(self, '\\') = 0;
+    snprintf(src, sizeof(src), "%s", self);
+    if (same_folder(src, target)) return 2; /* never install a folder over itself */
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (h) {
+        WaitForSingleObject(h, 60000);
+        CloseHandle(h);
+    }
+    if (!install_copy(src, target, kUserFiles, 30)) {
+        MessageBoxA(NULL, "Could not install the update. Download it from the releases page.", "Bloodborne",
+                    MB_OK | MB_ICONERROR);
+        ShellExecuteA(NULL, "open", BB_RELEASES_PAGE, NULL, NULL, SW_SHOWNORMAL);
+        return 1;
+    }
+    if (GetEnvironmentVariableA("BB_UPDATE_NO_RESTART", NULL, 0)) return 0; /* tests */
+    static const char* names[] = {"bb-launcher.exe", "bb-runtime.exe", "Bloodborne.exe"};
+    for (int i = 0; i < 3; ++i) {
+        snprintf(next, sizeof(next), "%s\\%s", target, names[i]);
+        if (GetFileAttributesA(next) != INVALID_FILE_ATTRIBUTES) {
+            ShellExecuteA(NULL, "open", next, NULL, target, SW_SHOWNORMAL);
+            break;
+        }
+    }
+    return 0;
+}
+
 /* --- Trophies tab: the unlocks the game made, with the trophy list of the Python launcher ---
  * scripts/launcher_trophies.py prints one line per trophy (id, set, grade, name, description,
  * unlock time); the list is the launcher's own bbport_trophies.py, not a copy. */
@@ -1543,6 +1747,12 @@ static void build_play_shortcuts(HWND page, int y) {
     SendMessageA(save, WM_SETFONT, (WPARAM)g_play_font, 1);
     SendMessageA(close, WM_SETFONT, (WPARAM)g_play_font, 1);
     SendMessageA(play, BM_SETSTYLE, BS_DEFPUSHBUTTON, TRUE);
+    HWND note = w_label(page, ID_UPDATE_LABEL, "", 10, by + 42 + 11, 220);
+    HWND install = w_button(page, ID_UPDATE_INSTALL, "Update", 232, by + 42 + 6, 70, 23);
+    HWND notes = w_button(page, ID_UPDATE_NOTES, "What's new", 308, by + 42 + 6, 82, 23);
+    ShowWindow(note, SW_HIDE);
+    ShowWindow(install, SW_HIDE);
+    ShowWindow(notes, SW_HIDE);
 }
 
 static void show_page(int sel) {
@@ -1568,6 +1778,11 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_MOD_UP) mod_move(-1);
         else if (id == ID_MOD_DOWN) mod_move(1);
         else if (id == ID_LISTS_REFRESH) lists_refresh();
+        else if (id == ID_UPDATE_INSTALL) on_update_install();
+        else if (id == ID_UPDATE_NOTES)
+            ShellExecuteA(g_main, "open", g_release.page_url[0] ? g_release.page_url : BB_RELEASES_PAGE, NULL, NULL,
+                          SW_SHOWNORMAL);
+        else if (id == ID_UPDATE_CHECK) update_check(1);
         else if (id == ID_TROPHY_REFRESH) trophies_refresh();
         else if (id == ID_TROPHY_FILTER && HIWORD(wp) == CBN_SELCHANGE) trophies_fill();
         else if (id == ID_LOG_COPY) log_copy();
@@ -1597,6 +1812,30 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         }
         break;
     }
+    case WM_UPDATE_FOUND:
+        on_update_found((int)wp, (ReleaseInfo*)lp);
+        return 0;
+    case WM_UPDATE_PROGRESS: {
+        char msg[96];
+        if (wp > 100) snprintf(msg, sizeof(msg), "Unpacking version %s...", g_release.version);
+        else snprintf(msg, sizeof(msg), "Downloading version %s... %d%%", g_release.version, (int)wp);
+        update_say(msg);
+        status(msg);
+        return 0;
+    }
+    case WM_UPDATE_FAILED:
+        g_update_busy = 0;
+        EnableWindow(GetDlgItem(g_pages[PG_PLAY], ID_UPDATE_INSTALL), TRUE);
+        {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "Version %s is available.", g_release.version);
+            update_say(msg);
+        }
+        MessageBoxA(g_main, (const char*)lp, "Bloodborne", MB_OK | MB_ICONERROR);
+        return 0;
+    case WM_UPDATE_READY:
+        DestroyWindow(g_main); /* the installer takes over once this process has ended */
+        return 0;
     case WM_TIMER:
         if (wp == LOG_TIMER && w == g_main && TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
         break;
@@ -1687,6 +1926,12 @@ static void build_ui(void) {
         if (i == PG_PLAY) {
             int top = build_play_banner(g_pages[i]);
             build_play_shortcuts(g_pages[i], build_page(i, top));
+        } else if (i == PG_ADV) {
+            int end = build_page(i, 8);
+            char ver[64];
+            snprintf(ver, sizeof(ver), "Version %s", BB_VERSION);
+            w_label(g_pages[i], 0, ver, 10, end + 14, 120);
+            w_button(g_pages[i], ID_UPDATE_CHECK, "Check for updates now", 130, end + 8, 150, 23);
         } else if (i == PG_LOG) {
             build_log_page(g_pages[i]);
         } else if (i == PG_TROPHIES) {
@@ -1707,6 +1952,7 @@ static void build_ui(void) {
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     (void)prev;
+    if (__argc >= 4 && !strcmp(__argv[1], "--install-update")) return install_update_main(__argv[2], (DWORD)strtoul(__argv[3], NULL, 10));
     CoInitialize(NULL);
 
     char exe[MAX_PATH];
@@ -1782,6 +2028,17 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         }
     }
     SetTimer(g_main, LOG_TIMER, 1500, NULL);
+    {
+        /* What a finished update left in the temp folder (unless this is that very copy). */
+        char leftovers[MAX_PATH], here[MAX_PATH];
+        GetTempPathA(sizeof(leftovers), leftovers);
+        strcat(leftovers, "bbport-update");
+        GetModuleFileNameA(NULL, here, sizeof(here));
+        if (_strnicmp(here, leftovers, strlen(leftovers)) != 0) rmtree(leftovers);
+        char on[8];
+        app_get("check_updates", "", on, sizeof(on), "1");
+        if (strcmp(on, "0") != 0) update_check(0);
+    }
     ShowWindow(g_main, show);
     UpdateWindow(g_main);
 
