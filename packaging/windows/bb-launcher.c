@@ -30,6 +30,9 @@
 #define ID_BANNER_ICON 133
 #define ID_PLAY 134
 #define ID_OPEN_BASE 4000 /* Play page shortcuts */
+#define ID_MOD_UP 5001
+#define ID_MOD_DOWN 5002
+#define ID_LISTS_REFRESH 5003
 #define ID_FIELD_BASE 1000  /* field i: control 1000+i */
 #define ID_BROWSE_BASE 2000 /* folder field i: browse button 2000+i */
 #define ID_VALUE_BASE 3000  /* slider field i: value text 3000+i */
@@ -93,7 +96,7 @@ static const char* kReadbackV[] = {"", "0", "2"};
 static const char* kReadbackL[] = {"Relaxed (default)", "Off", "Precise"};
 
 /* --- the field table --- */
-enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER };
+enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER, K_LIST };
 enum { ST_INI, ST_APP };
 enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_MODS, PG_ADV, PG_COUNT };
 static const char* kPageNames[PG_COUNT] = {"Play", "Graphics", "Display", "Game",
@@ -112,6 +115,9 @@ typedef struct {
     HWND hwnd;
 } Field;
 
+/* Headings and lists carry no value of their own (n is a list's height in pixels). */
+#define HAS_VALUE(f) ((f)->kind != K_HEAD && (f)->kind != K_LIST)
+#define FLD_LIST(pg, key, height) {pg, K_LIST, ST_APP, key, "", "", NULL, NULL, height, "", 0, NULL}
 #define FLD_HEAD(pg, label) {pg, K_HEAD, 0, "", "", label, NULL, NULL, 0, "", 0, NULL}
 #define FLD_CHECK(pg, st, key, legacy, label, dflt) \
     {pg, K_CHECK, st, key, legacy, label, NULL, NULL, 0, dflt, 0, NULL}
@@ -182,9 +188,14 @@ static Field g_fields[] = {
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_circle_confirm", "", "Japanese buttons: Circle confirms, Cross dodges", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "quit_to_desktop", "", "Quit to Desktop in the title and System menus", "1"),
     /* Mods */
-    FLD_CHECK(PG_MODS, ST_APP, "mods_enabled", "launcher_mods_on", "Enable loose-file mods", "1"),
+    FLD_HEAD(PG_MODS, "Mods"),
+    FLD_CHECK(PG_MODS, ST_APP, "mods_enabled", "launcher_mods_on",
+              "Load mods (one folder each; lower in the list wins)", "1"),
     FLD_FOLDER(PG_MODS, ST_APP, "mods_dir", "launcher_mods_dir", "Mods folder:"),
-    FLD_FOLDER(PG_MODS, ST_APP, "patches_dir", "launcher_patches_dir", "Extra patches folder:"),
+    FLD_LIST(PG_MODS, "mods_list", 84),
+    FLD_HEAD(PG_MODS, "Third-party patches (game version 1.09)"),
+    FLD_FOLDER(PG_MODS, ST_APP, "patches_dir", "launcher_patches_dir", "Patches folder:"),
+    FLD_LIST(PG_MODS, "patches_list", 64),
     /* Advanced */
     FLD_COMBO(PG_ADV, ST_APP, "draw_pipe", "launcher_draw_pipe", "GPU draw pipe:", kDrawPipeV, kDrawPipeL, ""),
     FLD_COMBO(PG_ADV, ST_APP, "readbacks", "launcher_readbacks", "GPU readbacks:", kReadbackV, kReadbackL, ""),
@@ -291,7 +302,7 @@ static void app_get(const char* key, const char* legacy, char* out, size_t n, co
 
 static int is_managed(const char* line) {
     for (int i = 0; i < NFIELDS; ++i) {
-        if (g_fields[i].store != ST_INI || g_fields[i].kind == K_HEAD) continue;
+        if (g_fields[i].store != ST_INI || !HAS_VALUE(&g_fields[i])) continue;
         size_t k = strlen(g_fields[i].key);
         if (!strncmp(line, g_fields[i].key, k) && line[k] == '=') return 1;
     }
@@ -402,7 +413,7 @@ static void load_fields(void) {
     char v[1024];
     for (int i = 0; i < NFIELDS; ++i) {
         Field* f = &g_fields[i];
-        if (f->kind == K_HEAD) continue;
+        if (!HAS_VALUE(f)) continue;
         if (f->store == ST_INI) ini_get(f->key, v, sizeof(v), f->dflt);
         else app_get(f->key, f->legacy, v, sizeof(v), f->dflt);
         switch (f->kind) {
@@ -434,18 +445,23 @@ static void load_fields(void) {
 /* Writes bbport.ini (unknown lines kept) and settings.json (unknown keys kept). */
 /* What every field holds right now, to tell whether anything changed since the last load or
  * save: with no Save button on most tabs, closing asks before dropping changes. */
+static void lists_state(char* out, size_t n);
+static void lists_save(void);
+
 static char g_snapshot[32768];
 
 static void snapshot(char* out, size_t n) {
     out[0] = 0;
     char v[1024];
     for (int i = 0; i < NFIELDS; ++i) {
-        if (g_fields[i].kind == K_HEAD) continue;
+        if (!HAS_VALUE(&g_fields[i])) continue;
         field_value(&g_fields[i], v, sizeof(v));
         size_t used = strlen(out);
         if (used + strlen(v) + 4 >= n) break;
         sprintf(out + used, "%s\n", v);
     }
+    size_t used = strlen(out);
+    if (used + 8 < n) lists_state(out + used, n - used);
 }
 
 static int save_fields(void) {
@@ -467,7 +483,7 @@ static int save_fields(void) {
     fputs("# written by bb-launcher (classic)\n", f);
     for (int i = 0; i < NFIELDS; ++i) {
         const Field* fl = &g_fields[i];
-        if (fl->kind == K_HEAD || fl->store != ST_INI) continue;
+        if (!HAS_VALUE(fl) || fl->store != ST_INI) continue;
         field_value(fl, v, sizeof(v));
         fprintf(f, "%s=%s\n", fl->key, v);
     }
@@ -476,7 +492,7 @@ static int save_fields(void) {
 
     for (int i = 0; i < NFIELDS; ++i) {
         const Field* fl = &g_fields[i];
-        if (fl->kind == K_HEAD || fl->store != ST_APP) continue;
+        if (!HAS_VALUE(fl) || fl->store != ST_APP) continue;
         field_value(fl, v, sizeof(v));
         if (fl->kind == K_CHECK) cfg_set_bool(fl->key, atoi(v));
         else cfg_set_str(fl->key, v);
@@ -488,6 +504,7 @@ static int save_fields(void) {
         status("Cannot write settings.json");
         return 0;
     }
+    lists_save();
     snapshot(g_snapshot, sizeof(g_snapshot));
     return 1;
 }
@@ -758,11 +775,362 @@ static void pick_folder_into(HWND parent, int edit_id, const wchar_t* title) {
     dlg->lpVtbl->Release(dlg);
 }
 
+/* --- Mods tab: the mod and patch lists ---
+ * What counts as a mod or a patch comes from scripts/launcher_lists.py (the Python launcher's
+ * own rules); the order and the on/off choices are kept in mods.json and patches.json next to
+ * the port, the files the Python launcher and run.py already use. */
+#define LIST_MAX 256
+typedef struct {
+    char* v[LIST_MAX];
+    int n;
+} StrList;
+
+static char* g_patch_keys[LIST_MAX];
+static int g_patch_n;
+static int g_lists_ok; /* the helper answered: only then are the json files written */
+
+static void strlist_free(StrList* l) {
+    for (int i = 0; i < l->n; ++i) free(l->v[i]);
+    l->n = 0;
+}
+
+static int strlist_index(const StrList* l, const char* s) {
+    for (int i = 0; i < l->n; ++i)
+        if (!strcmp(l->v[i], s)) return i;
+    return -1;
+}
+
+static void strlist_add(StrList* l, const char* s) {
+    if (l->n < LIST_MAX) l->v[l->n++] = _strdup(s);
+}
+
+static char* read_text_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = size >= 0 ? malloc((size_t)size + 1) : NULL;
+    if (buf) {
+        size_t got = fread(buf, 1, (size_t)size, f);
+        buf[got] = 0;
+    }
+    fclose(f);
+    return buf;
+}
+
+/* The strings of "key": [ "a", "b" ] in a JSON text. */
+static void json_string_array(const char* text, const char* key, StrList* out) {
+    out->n = 0;
+    char needle[64];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char* p = text ? strstr(text, needle) : NULL;
+    if (!p) return;
+    p = json_ws(p + strlen(needle));
+    if (*p != ':') return;
+    p = json_ws(p + 1);
+    if (*p != '[') return;
+    for (++p;;) {
+        p = json_ws(p);
+        if (*p != '"') break;
+        const char* e = json_skip_string(p);
+        if (!e) break;
+        size_t len = (size_t)(e - p) + 1;
+        char* buf = malloc(len);
+        if (!buf) break;
+        json_decode(p, buf, len);
+        if (out->n < LIST_MAX) out->v[out->n++] = buf;
+        else free(buf);
+        p = json_ws(e);
+        if (*p == ',') ++p;
+    }
+}
+
+/* Runs cmd with its output captured, up to 20 s. Returns 1 when it exited with 0. */
+static int run_capture(char* cmd, char* out, size_t n) {
+    SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa), .bInheritHandle = TRUE};
+    HANDLE rd, wr;
+    out[0] = 0;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return 0;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOA si = {.cb = sizeof(si), .dwFlags = STARTF_USESTDHANDLES, .hStdOutput = wr,
+                       .hStdError = wr, .hStdInput = GetStdHandle(STD_INPUT_HANDLE)};
+    PROCESS_INFORMATION pi;
+    BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, g_root, &si, &pi);
+    CloseHandle(wr);
+    if (!ok) {
+        CloseHandle(rd);
+        return 0;
+    }
+    size_t used = 0;
+    DWORD start = GetTickCount();
+    for (;;) {
+        DWORD avail = 0, got = 0;
+        if (PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL) && avail) {
+            size_t room = n - 1 - used;
+            if (!room) break;
+            ReadFile(rd, out + used, avail < room ? avail : (DWORD)room, &got, NULL);
+            used += got;
+            continue;
+        }
+        if (WaitForSingleObject(pi.hProcess, 25) == WAIT_OBJECT_0) {
+            while (PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL) && avail && used < n - 1) {
+                ReadFile(rd, out + used, avail < n - 1 - used ? avail : (DWORD)(n - 1 - used), &got, NULL);
+                used += got;
+            }
+            break;
+        }
+        if (GetTickCount() - start > 20000) {
+            TerminateProcess(pi.hProcess, 1);
+            break;
+        }
+    }
+    out[used] = 0;
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    CloseHandle(rd);
+    return code == 0;
+}
+
+/* The command running scripts/launcher_lists.py: through the frozen runtime when there is one
+ * (--script), else through Python in a source tree. */
+static void helper_command(const char* args, char* cmd, size_t n) {
+    char exedir[MAX_PATH], frozen[MAX_PATH], script[MAX_PATH + 32];
+    GetModuleFileNameA(NULL, exedir, sizeof(exedir));
+    *strrchr(exedir, '\\') = 0;
+    snprintf(script, sizeof(script), "%s\\scripts\\launcher_lists.py", g_root);
+    frozen_runtime(exedir, frozen, sizeof(frozen));
+    if (GetFileAttributesA(frozen) == INVALID_FILE_ATTRIBUTES) frozen_runtime(g_root, frozen, sizeof(frozen));
+    if (GetFileAttributesA(frozen) != INVALID_FILE_ATTRIBUTES) {
+        snprintf(cmd, n, "\"%s\" --script \"%s\" %s", frozen, script, args);
+    } else {
+        char python[512];
+        find_python(python, sizeof(python));
+        snprintf(cmd, n, "%s \"%s\" %s", python, script, args);
+    }
+}
+
+static void lv_add(HWND lv, int index, const char* text, int checked, LPARAM param) {
+    LVITEMA it = {.mask = LVIF_TEXT | LVIF_PARAM, .iItem = index, .pszText = (char*)text, .lParam = param};
+    SendMessageA(lv, LVM_INSERTITEMA, 0, (LPARAM)&it);
+    ListView_SetCheckState(lv, index, checked);
+}
+
+static int lv_state(HWND lv, int index) {
+    return ListView_GetCheckState(lv, index) ? 1 : 0;
+}
+
+static void trim_slashes(char* path) {
+    size_t len = strlen(path);
+    while (len > 3 && (path[len - 1] == '\\' || path[len - 1] == '/')) path[--len] = 0;
+}
+
+/* Rebuilds both lists from the folders in the edit boxes, keeping the choices already made on
+ * screen and falling back to mods.json / patches.json. */
+static void lists_refresh(void) {
+    HWND mods_lv = field_by_key("mods_list")->hwnd, patch_lv = field_by_key("patches_list")->hwnd;
+    char mods[MAX_PATH], patches[MAX_PATH], args[3 * MAX_PATH], cmd[4 * MAX_PATH], path[MAX_PATH + 16];
+    static char out[65536];
+    GetWindowTextA(field_by_key("mods_dir")->hwnd, mods, sizeof(mods));
+    GetWindowTextA(field_by_key("patches_dir")->hwnd, patches, sizeof(patches));
+    if (!mods[0]) snprintf(mods, sizeof(mods), "%s\\mods", g_root);
+    if (!patches[0]) snprintf(patches, sizeof(patches), "%s\\patches", g_root);
+    trim_slashes(mods);
+    trim_slashes(patches);
+    snprintf(args, sizeof(args), "\"%s\" \"%s\" 01.09", mods, patches);
+    helper_command(args, cmd, sizeof(cmd));
+    status("Reading mods and patches...");
+    if (!run_capture(cmd, out, sizeof(out))) {
+        status("Could not list mods and patches (no runtime or Python found?).");
+        g_lists_ok = 0;
+        return;
+    }
+
+    /* Choices already on screen, by name. */
+    StrList old_mods = {0}, old_on = {0}, old_patch = {0}, old_patch_on = {0};
+    char text[512];
+    for (int i = 0, n = ListView_GetItemCount(mods_lv); i < n; ++i) {
+        ListView_GetItemText(mods_lv, i, 0, text, (int)sizeof(text));
+        strlist_add(&old_mods, text);
+        strlist_add(&old_on, lv_state(mods_lv, i) ? "1" : "0");
+    }
+    for (int i = 0; i < g_patch_n; ++i) {
+        strlist_add(&old_patch, g_patch_keys[i]);
+        strlist_add(&old_patch_on, lv_state(patch_lv, i) ? "1" : "0");
+    }
+
+    StrList order = {0}, disabled = {0}, enabled = {0}, off = {0}, avail = {0};
+    snprintf(path, sizeof(path), "%s\\mods.json", g_root);
+    char* profile = read_text_file(path);
+    json_string_array(profile, "order", &order);
+    json_string_array(profile, "disabled", &disabled);
+    free(profile);
+    snprintf(path, sizeof(path), "%s\\patches.json", g_root);
+    char* chosen = read_text_file(path);
+    json_string_array(chosen, "enabled", &enabled);
+    json_string_array(chosen, "disabled", &off);
+    free(chosen);
+
+    ListView_DeleteAllItems(mods_lv);
+    ListView_DeleteAllItems(patch_lv);
+    for (int i = 0; i < g_patch_n; ++i) free(g_patch_keys[i]);
+    g_patch_n = 0;
+
+    /* The output is one entry per line; split it in place. */
+    StrList patch_lines = {0};
+    for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
+        line[strcspn(line, "\r")] = 0;
+        if (!strncmp(line, "mod\t", 4)) strlist_add(&avail, line + 4);
+        else if (!strncmp(line, "patch\t", 6)) strlist_add(&patch_lines, line + 6);
+    }
+    int count = 0;
+    for (int i = 0; i < order.n; ++i) {   /* known order first, then the rest */
+        if (strlist_index(&avail, order.v[i]) < 0) continue;
+        int was = strlist_index(&old_mods, order.v[i]);
+        lv_add(mods_lv, count++, order.v[i],
+               was >= 0 ? old_on.v[was][0] == '1' : strlist_index(&disabled, order.v[i]) < 0, 0);
+    }
+    for (int i = 0; i < avail.n; ++i) {
+        int listed = 0;
+        for (int j = 0; j < order.n; ++j) listed |= !strcmp(order.v[j], avail.v[i]);
+        if (listed) continue;
+        int was = strlist_index(&old_mods, avail.v[i]);
+        lv_add(mods_lv, count++, avail.v[i],
+               was >= 0 ? old_on.v[was][0] == '1' : strlist_index(&disabled, avail.v[i]) < 0, 0);
+    }
+    for (int i = 0; i < patch_lines.n; ++i) {
+        char* key = patch_lines.v[i];
+        char* author = strchr(key, '\t');
+        char* dflt = "0";
+        if (author) {
+            *author++ = 0;
+            char* tab = strchr(author, '\t');
+            if (tab) {
+                *tab++ = 0;
+                dflt = tab;
+            }
+        }
+        int was = strlist_index(&old_patch, key);
+        int on = was >= 0 ? old_patch_on.v[was][0] == '1'
+                          : (strlist_index(&enabled, key) >= 0 ||
+                             (strlist_index(&off, key) < 0 && dflt[0] == '1'));
+        char label[768];
+        snprintf(label, sizeof(label), "%s%s%s", key, author && author[0] ? "  -  " : "", author ? author : "");
+        if (g_patch_n < LIST_MAX) {
+            g_patch_keys[g_patch_n] = _strdup(key);
+            lv_add(patch_lv, g_patch_n, label, on, g_patch_n);
+            ++g_patch_n;
+        }
+    }
+    char msg[160];
+    snprintf(msg, sizeof(msg), "%d mod(s) and %d patch(es) found.", count, g_patch_n);
+    status(msg);
+    g_lists_ok = 1;
+    StrList* all[] = {&old_mods, &old_on, &old_patch, &old_patch_on, &order, &disabled, &enabled, &off, &avail, &patch_lines};
+    for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); ++i) strlist_free(all[i]);
+}
+
+/* A string of what the lists hold, for the unsaved-changes check. */
+static void lists_state(char* out, size_t n) {
+    HWND mods_lv = field_by_key("mods_list")->hwnd, patch_lv = field_by_key("patches_list")->hwnd;
+    char text[512];
+    out[0] = 0;
+    for (int i = 0, c = ListView_GetItemCount(mods_lv); i < c; ++i) {
+        ListView_GetItemText(mods_lv, i, 0, text, (int)sizeof(text));
+        if (strlen(out) + strlen(text) + 4 < n) sprintf(out + strlen(out), "%s:%d;", text, lv_state(mods_lv, i));
+    }
+    for (int i = 0; i < g_patch_n; ++i)
+        if (strlen(out) + strlen(g_patch_keys[i]) + 4 < n)
+            sprintf(out + strlen(out), "%s:%d;", g_patch_keys[i], lv_state(patch_lv, i));
+}
+
+static void write_json_array(FILE* f, const char* name, const StrList* l, int last) {
+    fprintf(f, "  \"%s\": [", name);
+    for (int i = 0; i < l->n; ++i) {
+        char* q = json_quote(l->v[i]);
+        fprintf(f, "%s\n    %s", i ? "," : "", q ? q : "\"\"");
+        free(q);
+    }
+    fprintf(f, "%s]%s\n", l->n ? "\n  " : "", last ? "" : ",");
+}
+
+/* mods.json {"order", "disabled"} and patches.json {"enabled", "disabled"}, as the Python
+ * launcher writes them; patches that are not listed here keep the choice already stored. */
+static void lists_save(void) {
+    if (!g_lists_ok) return;
+    HWND mods_lv = field_by_key("mods_list")->hwnd, patch_lv = field_by_key("patches_list")->hwnd;
+    char path[MAX_PATH + 16], text[512];
+    int count = ListView_GetItemCount(mods_lv);
+    if (count > 0) {
+        StrList order = {0}, disabled = {0};
+        for (int i = 0; i < count; ++i) {
+            ListView_GetItemText(mods_lv, i, 0, text, (int)sizeof(text));
+            strlist_add(&order, text);
+            if (!lv_state(mods_lv, i)) strlist_add(&disabled, text);
+        }
+        snprintf(path, sizeof(path), "%s\\mods.json", g_root);
+        FILE* f = fopen(path, "wb");
+        if (f) {
+            fputs("{\n", f);
+            write_json_array(f, "order", &order, 0);
+            write_json_array(f, "disabled", &disabled, 1);
+            fputs("}\n", f);
+            fclose(f);
+        }
+        strlist_free(&order);
+        strlist_free(&disabled);
+    }
+    if (g_patch_n > 0) {
+        StrList enabled = {0}, off = {0}, keep_on = {0}, keep_off = {0}, shown = {0};
+        snprintf(path, sizeof(path), "%s\\patches.json", g_root);
+        char* chosen = read_text_file(path);
+        json_string_array(chosen, "enabled", &keep_on);
+        json_string_array(chosen, "disabled", &keep_off);
+        free(chosen);
+        for (int i = 0; i < g_patch_n; ++i) strlist_add(&shown, g_patch_keys[i]);
+        for (int i = 0; i < keep_on.n; ++i)
+            if (strlist_index(&shown, keep_on.v[i]) < 0) strlist_add(&enabled, keep_on.v[i]);
+        for (int i = 0; i < keep_off.n; ++i)
+            if (strlist_index(&shown, keep_off.v[i]) < 0) strlist_add(&off, keep_off.v[i]);
+        for (int i = 0; i < g_patch_n; ++i)
+            strlist_add(lv_state(patch_lv, i) ? &enabled : &off, g_patch_keys[i]);
+        FILE* f = fopen(path, "wb");
+        if (f) {
+            fputs("{\n", f);
+            write_json_array(f, "enabled", &enabled, 0);
+            write_json_array(f, "disabled", &off, 1);
+            fputs("}\n", f);
+            fclose(f);
+        }
+        StrList* all[] = {&enabled, &off, &keep_on, &keep_off, &shown};
+        for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); ++i) strlist_free(all[i]);
+    }
+}
+
+static void mod_move(int step) {
+    HWND lv = field_by_key("mods_list")->hwnd;
+    int i = ListView_GetNextItem(lv, -1, LVNI_SELECTED), j = i + step;
+    if (i < 0 || j < 0 || j >= ListView_GetItemCount(lv)) return;
+    char a[512], b[512];
+    ListView_GetItemText(lv, i, 0, a, (int)sizeof(a));
+    ListView_GetItemText(lv, j, 0, b, (int)sizeof(b));
+    int ca = lv_state(lv, i), cb = lv_state(lv, j);
+    ListView_SetItemText(lv, i, 0, b);
+    ListView_SetItemText(lv, j, 0, a);
+    ListView_SetCheckState(lv, i, cb);
+    ListView_SetCheckState(lv, j, ca);
+    ListView_SetItemState(lv, i, 0, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_SetItemState(lv, j, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+}
+
 static void on_browse(int index) {
     const Field* f = &g_fields[index];
     wchar_t title[96];
     swprintf(title, sizeof(title) / sizeof(title[0]), L"Pick a folder");
     pick_folder_into(g_pages[f->page], f->id, title);
+    if (!strcmp(f->key, "mods_dir") || !strcmp(f->key, "patches_dir")) lists_refresh();
 }
 
 /* The Play page shortcuts: 0 game folder, 1 saves folder, 2 last run log, 3 bbport.ini. */
@@ -858,6 +1226,26 @@ static int build_page(int pg, int y0) {
                 y += 16;
             }
             break;
+        case K_LIST: {
+            int mods = !strcmp(f->key, "mods_list");
+            int w = PAGE_W - 24 - ix - (mods ? 70 : 0);
+            f->hwnd = CreateWindowExA(WS_EX_CLIENTEDGE, WC_LISTVIEWA, "", WS_CHILD | WS_VISIBLE |
+                                      WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS |
+                                      LVS_NOCOLUMNHEADER, S(LABEL_X + ix), S(y), S(w), S(f->n),
+                                      page, (HMENU)(INT_PTR)f->id, NULL, NULL);
+            SendMessageA(f->hwnd, WM_SETFONT, (WPARAM)g_font, 1);
+            ListView_SetExtendedListViewStyle(f->hwnd, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT);
+            LVCOLUMNA col = {.mask = LVCF_WIDTH, .cx = S(w - 24)};
+            SendMessageA(f->hwnd, LVM_INSERTCOLUMNA, 0, (LPARAM)&col);
+            if (mods) {
+                int bx = LABEL_X + ix + w + 6;
+                w_button(page, ID_MOD_UP, "Move up", bx, y, 64, 23);
+                w_button(page, ID_MOD_DOWN, "Move down", bx, y + 28, 64, 23);
+                w_button(page, ID_LISTS_REFRESH, "Refresh", bx, y + 56, 64, 23);
+            }
+            y += f->n + 6;
+            break;
+        }
         case K_SLIDER:
             w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
             f->hwnd = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
@@ -934,6 +1322,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     case WM_COMMAND: {
         int id = LOWORD(wp);
         if (id == ID_PLAY) on_run();
+        else if (id == ID_MOD_UP) mod_move(-1);
+        else if (id == ID_MOD_DOWN) mod_move(1);
+        else if (id == ID_LISTS_REFRESH) lists_refresh();
         else if (id == ID_CLOSE) SendMessageA(g_main, WM_CLOSE, 0, 0);
         else if (id == ID_SAVE) {
             if (save_fields()) status("Settings saved.");
@@ -1013,7 +1404,7 @@ static HFONT make_font(void) {
 }
 
 static void build_ui(void) {
-    INITCOMMONCONTROLSEX icc = {.dwSize = sizeof(icc), .dwICC = ICC_TAB_CLASSES | ICC_BAR_CLASSES};
+    INITCOMMONCONTROLSEX icc = {.dwSize = sizeof(icc), .dwICC = ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES};
     InitCommonControlsEx(&icc);
     g_tabs = CreateWindowA(WC_TABCONTROLA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TABS,
                            S(TABS_X), S(TABS_Y), S(TABS_W), S(TABS_H), g_main,
@@ -1103,6 +1494,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
                            rc.bottom - rc.top, NULL, NULL, inst, NULL);
     build_ui();
     load_fields();
+    lists_refresh();
     snapshot(g_snapshot, sizeof(g_snapshot));
     /* --page=N (0-based) opens on that tab. */
     const char* opt = cmd ? strstr(cmd, "--page=") : NULL;
