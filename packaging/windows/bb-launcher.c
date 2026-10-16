@@ -25,6 +25,11 @@
 #define ID_TABS 117
 #define ID_GAME_NOTE 120
 #define ID_GAME_INFO 121
+#define ID_BANNER 130
+#define ID_BANNER_TITLE 131
+#define ID_BANNER_SUB 132
+#define ID_BANNER_ICON 133
+#define ID_PLAY 134
 #define ID_OPEN_BASE 4000 /* Play page shortcuts */
 #define ID_FIELD_BASE 1000  /* field i: control 1000+i */
 #define ID_BROWSE_BASE 2000 /* folder field i: browse button 2000+i */
@@ -122,7 +127,6 @@ static Field g_fields[] = {
     /* Play */
     FLD_HEAD(PG_PLAY, "Game"),
     FLD_FOLDER(PG_PLAY, ST_APP, "game_dir", "launcher_game_dir", "Game folder:"),
-    FLD_HEAD(PG_PLAY, "Start options"),
     FLD_CHECK(PG_PLAY, ST_INI, "skip_intro", "", "Skip the intro logos and movie", "1"),
     FLD_CHECK(PG_PLAY, ST_INI, "show_fps", "", "Show the FPS counter in the game", "1"),
     /* Graphics */
@@ -210,7 +214,8 @@ static HANDLE g_child;
 /* DPI scaling: every layout pixel goes through S(). The window declares
  * PerMonitorV2, so on 125/150% displays fixed pixels would overlap. */
 static int g_dpi = 96;
-static HFONT g_font;
+static HFONT g_font, g_title_font, g_play_font;
+static HBRUSH g_black;
 static int S(int v) {
     return (v * g_dpi + 48) / 96;
 }
@@ -570,6 +575,11 @@ static void frozen_runtime(const char* dir, char* out, size_t n) {
     snprintf(out, n, "%s\\bb-runtime.exe", dir);
 }
 
+static void set_run_enabled(BOOL on) {
+    EnableWindow(GetDlgItem(g_main, ID_RUN), on);
+    EnableWindow(GetDlgItem(g_pages[PG_PLAY], ID_PLAY), on);
+}
+
 static DWORD WINAPI watch_thread(LPVOID unused) {
     (void)unused;
     WaitForSingleObject(g_child, INFINITE);
@@ -582,7 +592,7 @@ static DWORD WINAPI watch_thread(LPVOID unused) {
     snprintf(msg, sizeof(msg), "Game exited (%lu). %s", (unsigned long)code,
              code ? "See launcher-run.log." : "Ready.");
     status(msg);
-    EnableWindow(GetDlgItem(g_main, ID_RUN), TRUE);
+    set_run_enabled(TRUE);
     if (code) {
         /* Surface the log tail: bb-probe's own stdout may predate the crash. */
         char path[MAX_PATH], tail[2048] = "";
@@ -701,7 +711,7 @@ static void on_run(void) {
     CloseHandle(pi.hThread);
     g_child = pi.hProcess;
     g_running = 1;
-    EnableWindow(GetDlgItem(g_main, ID_RUN), FALSE);
+    set_run_enabled(FALSE);
     status("Game starting silently (launcher-run.log)...");
     CloseHandle(CreateThread(NULL, 0, watch_thread, NULL, 0, NULL));
 }
@@ -787,9 +797,9 @@ static void end_group(HWND group, int group_y, int* y) {
     *y = group_y + h;
 }
 
-static int build_page(int pg) {
+static int build_page(int pg, int y0) {
     HWND page = g_pages[pg];
-    int y = 8, ix = 0; /* ix: indent inside a group box */
+    int y = y0, ix = 0; /* ix: indent inside a group box */
     HWND group = NULL;
     int group_y = 0;
     for (int i = 0; i < NFIELDS; ++i) {
@@ -799,7 +809,7 @@ static int build_page(int pg) {
         switch (f->kind) {
         case K_HEAD:
             if (group) end_group(group, group_y, &y);
-            if (y > 8) y += 4;
+            if (y > y0) y += 4;
             group_y = y;
             group = CreateWindowA("BUTTON", f->label, WS_CHILD | WS_VISIBLE | BS_GROUPBOX, S(6),
                                   S(y), S(PAGE_W - 12), S(40), page, NULL, NULL, NULL);
@@ -848,7 +858,28 @@ static int build_page(int pg) {
     return y;
 }
 
-/* Play: shortcuts to the things that are looked at most when something goes wrong. */
+/* Play: a dark banner with the game's icon and name across the top, like the title strip of a
+ * 90s game launcher. Returns the y below it. */
+static int build_play_banner(HWND page) {
+    HINSTANCE inst = GetModuleHandleA(NULL);
+    HWND bar = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, S(6), S(6), S(PAGE_W - 12), S(48),
+                             page, (HMENU)(INT_PTR)ID_BANNER, NULL, NULL);
+    (void)bar;
+    HWND icon = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_ICON, S(14), S(14), S(32),
+                              S(32), page, (HMENU)(INT_PTR)ID_BANNER_ICON, NULL, NULL);
+    HICON ico = (HICON)LoadImageA(inst, MAKEINTRESOURCEA(1), IMAGE_ICON, S(32), S(32), LR_DEFAULTCOLOR);
+    if (ico) SendMessageA(icon, STM_SETICON, (WPARAM)ico, 0);
+    HWND title = CreateWindowA("STATIC", "BLOODBORNE", WS_CHILD | WS_VISIBLE, S(56), S(9), S(330),
+                               S(28), page, (HMENU)(INT_PTR)ID_BANNER_TITLE, NULL, NULL);
+    SendMessageA(title, WM_SETFONT, (WPARAM)g_title_font, 1);
+    HWND sub = CreateWindowA("STATIC", "Native PC port", WS_CHILD | WS_VISIBLE, S(58), S(35),
+                             S(330), S(14), page, (HMENU)(INT_PTR)ID_BANNER_SUB, NULL, NULL);
+    SendMessageA(sub, WM_SETFONT, (WPARAM)g_font, 1);
+    return 60;
+}
+
+/* Play: shortcuts to the things that are looked at most when something goes wrong, and a big
+ * Play button under them. */
 static void build_play_shortcuts(HWND page, int y) {
     static const char* names[4] = {"Open game folder", "Open saves folder", "Open last run log",
                                    "Open bbport.ini"};
@@ -858,6 +889,8 @@ static void build_play_shortcuts(HWND page, int y) {
     SendMessageA(group, WM_SETFONT, (WPARAM)g_font, 1);
     for (int i = 0; i < 4; ++i)
         w_button(page, ID_OPEN_BASE + i, names[i], 14 + (i % 2) * 188, y + 16 + (i / 2) * 28, 182, 23);
+    HWND play = w_button(page, ID_PLAY, "&Play Bloodborne", 6, y + 74 + 8, PAGE_W - 12, 42);
+    SendMessageA(play, WM_SETFONT, (WPARAM)g_play_font, 1);
 }
 
 static void show_page(int sel) {
@@ -879,7 +912,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_COMMAND: {
         int id = LOWORD(wp);
-        if (id == ID_RUN) on_run();
+        if (id == ID_RUN || id == ID_PLAY) on_run();
         else if (id == ID_CLOSE) DestroyWindow(g_main);
         else if (id == ID_SAVE) {
             if (save_fields()) status("Settings saved.");
@@ -892,6 +925,15 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             if (f->kind == K_CHECK && HIWORD(wp) == BN_CLICKED) exclusive_cheats(id);
             if (f->kind == K_FOLDER && !strcmp(f->key, "game_dir") && HIWORD(wp) == EN_CHANGE)
                 refresh_game_note();
+        }
+        break;
+    }
+    case WM_CTLCOLORSTATIC: {
+        int cid = GetDlgCtrlID((HWND)lp);
+        if (cid >= ID_BANNER && cid <= ID_BANNER_ICON) {
+            SetBkColor((HDC)wp, RGB(0, 0, 0));
+            SetTextColor((HDC)wp, cid == ID_BANNER_TITLE ? RGB(196, 24, 24) : RGB(170, 170, 170));
+            return (LRESULT)g_black;
         }
         break;
     }
@@ -951,9 +993,11 @@ static void build_ui(void) {
         TCITEMA ti = {.mask = TCIF_TEXT, .pszText = (char*)kPageNames[i]};
         TabCtrl_InsertItem(g_tabs, i, &ti);
         g_pages[i] = make_page();
-        {
-            int end = build_page(i);
-            if (i == PG_PLAY) build_play_shortcuts(g_pages[i], end);
+        if (i == PG_PLAY) {
+            int top = build_play_banner(g_pages[i]);
+            build_play_shortcuts(g_pages[i], build_page(i, top));
+        } else {
+            build_page(i, 8);
         }
     }
     place_pages();
@@ -1003,6 +1047,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     WNDCLASSA wc = {.lpfnWndProc = wndproc,
                     .hInstance = inst,
                     .hCursor = LoadCursor(NULL, IDC_ARROW),
+                    .hIcon = LoadIcon(inst, MAKEINTRESOURCE(1)),
                     .hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1),
                     .lpszClassName = "BbLauncher"};
     RegisterClassA(&wc);
@@ -1019,6 +1064,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     g_dpi = get_system_dpi ? (int)get_system_dpi() : 96;
     if (g_dpi < 96) g_dpi = 96;
     g_font = make_font();
+    g_black = CreateSolidBrush(RGB(0, 0, 0));
+    g_title_font = CreateFontA(-MulDiv(18, g_dpi, 72), 0, 0, 0, FW_BOLD, TRUE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                               ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_ROMAN, "Times New Roman");
+    g_play_font = CreateFontA(-MulDiv(12, g_dpi, 72), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                              DEFAULT_QUALITY, DEFAULT_PITCH, "MS Shell Dlg");
     RECT rc = {0, 0, S(WIN_W), S(WIN_H)};
     AdjustWindowRect(&rc, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
     g_main = CreateWindowA("BbLauncher", "Bloodborne", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
