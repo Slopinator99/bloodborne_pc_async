@@ -221,6 +221,33 @@ static int http_download(const char* url, const char* path, ProgressFn progress,
     return ok;
 }
 
+typedef void (*CountFn)(int done, int total, void* context);
+
+/* Downloads base/<name> into folder/<name> for each name, through a .part file so an interrupted
+ * download never leaves a half file under the real name. Stops at the first failure: returns 0
+ * with *failed the index of that name (earlier files stay). progress(done, total) is called
+ * before the first file and after each one. Returns 1 when every file arrived. */
+static int download_files(const char* base, char* const* names, int n, const char* folder,
+                          CountFn progress, void* context, int* failed) {
+    CreateDirectoryA(folder, NULL);
+    if (failed) *failed = -1;
+    if (progress) progress(0, n, context);
+    for (int i = 0; i < n; ++i) {
+        char url[1536], part[MAX_PATH + 8], dest[MAX_PATH];
+        snprintf(url, sizeof(url), "%s/%s", base, names[i]);
+        snprintf(dest, sizeof(dest), "%s\\%s", folder, names[i]);
+        snprintf(part, sizeof(part), "%s.part", dest);
+        if (!http_download(url, part, NULL, NULL) ||
+            !MoveFileExA(part, dest, MOVEFILE_REPLACE_EXISTING)) {
+            DeleteFileA(part);
+            if (failed) *failed = i;
+            return 0;
+        }
+        if (progress) progress(i + 1, n, context);
+    }
+    return 1;
+}
+
 /* --- files --- */
 
 /* Deletes a folder tree (best effort). */

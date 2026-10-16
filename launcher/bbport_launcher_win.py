@@ -427,28 +427,13 @@ def recommended_graphics_preset(gpu):
     return 'balanced' if memory < 7500 else 'high' if memory < 11500 else 'ultra'
 UI_LANGUAGES = bbport_lang.LANGUAGE_NAMES
 
-FSR4_COMMIT = 'ae8d628fae208813172446d1e49ed94150b04658'
-FSR4_BASE = f'https://raw.githubusercontent.com/FireBurn/Q2RTX/{FSR4_COMMIT}/baseq2/fsr4_shaders'
-# Output tiers of the v07 model: up to 1920x1080, up to 3840x2160, and wider or taller outputs
-# (5120x1440, 7680x4320). Each tier's SPIR-V bakes its tensor pitch, so no tier stands in for another.
-FSR4_TIERS = ('1080', '2160', '4320')
-
-
-def fsr4_files():
-    """The FSR 4 v07 asset set of tools/fetch_fsr4_assets.sh (every tier in FSR4_TIERS)."""
-    files = ['LICENSE-FSR4-v07.txt', 'rcas.spv', 'spd_auto_exposure.spv']
-    for model in ('native', 'quality', 'balanced', 'performance', 'ultraperf', 'drs'):
-        files += [f'fsr4_model_v07_i8_{model}_initializers.bin', f'fsr4_model_v07_i8_{model}_pre_weights.bin',
-                  f'fsr4_model_v07_i8_{model}_shader_manifest.json']
-        for tier in FSR4_TIERS:
-            files += [f'fsr4_model_v07_i8_{model}_{tier}_pre.spv', f'fsr4_model_v07_i8_{model}_{tier}_post.spv']
-            files += [f'fsr4_model_v07_i8_{model}_{tier}_pass{n}.spv' for n in range(1, 13)]
-    return files
+# The asset list and where it comes from are shared with the native launcher (scripts/fsr4_assets.py).
+from fsr4_assets import FSR4_BASE, FSR4_COMMIT, FSR4_TIERS, fsr4_files  # noqa: E402,F401
+import fsr4_assets  # noqa: E402
 
 
 def fsr4_missing():
-    folder = PORT_DIR / 'fsr4_shaders'
-    return [name for name in fsr4_files() if not (folder / name).is_file() or not (folder / name).stat().st_size]
+    return fsr4_assets.fsr4_missing(PORT_DIR / 'fsr4_shaders')
 
 
 def load_json(path, default):

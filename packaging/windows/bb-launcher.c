@@ -53,6 +53,11 @@
 #define WM_UPDATE_PROGRESS (WM_APP + 2) /* wParam: percent */
 #define WM_UPDATE_FAILED (WM_APP + 3)   /* lParam: static message */
 #define WM_UPDATE_READY (WM_APP + 4)    /* the installer was started: close */
+#define ID_FSR4_STATUS 5400
+#define ID_FSR4_BAR 5401
+#define ID_FSR4_DOWNLOAD 5402
+#define WM_FSR4_PROGRESS (WM_APP + 5)   /* wParam: files done, lParam: files in all */
+#define WM_FSR4_DONE (WM_APP + 6)       /* wParam: 1 when all arrived; lParam: malloc'd message or NULL */
 
 /* This build, and where newer ones come from: the releases of the fork. The tag's numbers are
  * the version (windows-v1.8.0 -> 1.8.0). BB_RELEASES_API overrides the address (tests). */
@@ -1350,6 +1355,140 @@ static int install_update_main(const char* target, DWORD pid) {
     return 0;
 }
 
+/* --- FSR 4 assets (Graphics tab) ---
+ * The file list and where the files come from are scripts/launcher_fsr4.py (the Python
+ * launcher's own, scripts/fsr4_assets.py); they go to <port>/fsr4_shaders, a file at a time
+ * through a .part file, and only the missing ones are fetched, so an interrupted download
+ * carries on where it stopped. */
+#define FSR4_MAX 256
+static char g_fsr4_base[512];
+static char* g_fsr4_missing[FSR4_MAX];
+static int g_fsr4_missing_n, g_fsr4_total, g_fsr4_busy, g_fsr4_known;
+
+static void fsr4_say(const char* text) {
+    SetWindowTextA(GetDlgItem(g_pages[PG_GRAPHICS], ID_FSR4_STATUS), text);
+}
+
+static void fsr4_refresh(void) {
+    char args[MAX_PATH + 8], cmd[4 * MAX_PATH];
+    static char out[32768];
+    snprintf(args, sizeof(args), "\"%s\"", g_root);
+    helper_command("launcher_fsr4.py", args, cmd, sizeof(cmd));
+    if (!run_capture(cmd, out, sizeof(out))) {
+        fsr4_say("Could not read the FSR 4 asset list (no runtime or Python found?).");
+        return;
+    }
+    for (int i = 0; i < g_fsr4_missing_n; ++i) free(g_fsr4_missing[i]);
+    g_fsr4_missing_n = g_fsr4_total = 0;
+    for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
+        line[strcspn(line, "\r")] = 0;
+        if (!strncmp(line, "base\t", 5)) {
+            snprintf(g_fsr4_base, sizeof(g_fsr4_base), "%s", line + 5);
+        } else if (!strncmp(line, "file\t", 5)) {
+            char* name = line + 5;
+            char* tab = strchr(name, '\t');
+            if (!tab) continue;
+            *tab = 0;
+            ++g_fsr4_total;
+            if (tab[1] == '0' && g_fsr4_missing_n < FSR4_MAX) g_fsr4_missing[g_fsr4_missing_n++] = _strdup(name);
+        }
+    }
+    g_fsr4_known = 1;
+    char msg[200];
+    if (!g_fsr4_missing_n)
+        snprintf(msg, sizeof(msg), "FSR 4 assets are installed (%d files).", g_fsr4_total);
+    else if (g_fsr4_missing_n == g_fsr4_total)
+        snprintf(msg, sizeof(msg),
+                 "Not downloaded yet: %d files, about 30 MB. Without them FSR 4 falls back to FSR 3.1.",
+                 g_fsr4_total);
+    else
+        snprintf(msg, sizeof(msg), "%d of %d files are missing (a download was interrupted).",
+                 g_fsr4_missing_n, g_fsr4_total);
+    fsr4_say(msg);
+    EnableWindow(GetDlgItem(g_pages[PG_GRAPHICS], ID_FSR4_DOWNLOAD), g_fsr4_missing_n && !g_fsr4_busy);
+}
+
+typedef struct {
+    char base[512], folder[MAX_PATH];
+    char* names[FSR4_MAX];
+    int n;
+} Fsr4Job;
+
+static void fsr4_progress(int done, int total, void* ctx) {
+    (void)ctx;
+    PostMessageA(g_main, WM_FSR4_PROGRESS, (WPARAM)done, (LPARAM)total);
+}
+
+static DWORD WINAPI fsr4_thread(LPVOID param) {
+    Fsr4Job* job = param;
+    int failed = -1;
+    int ok = download_files(job->base, job->names, job->n, job->folder, fsr4_progress, NULL, &failed);
+    char* msg = NULL;
+    if (!ok) {
+        msg = malloc(320);
+        if (msg)
+            snprintf(msg, 320, "Could not download %s.\n\nCheck the connection and press the button "
+                               "again: the files already downloaded are kept.",
+                     failed >= 0 ? job->names[failed] : "the files");
+    }
+    for (int i = 0; i < job->n; ++i) free(job->names[i]);
+    free(job);
+    PostMessageA(g_main, WM_FSR4_DONE, (WPARAM)ok, (LPARAM)msg);
+    return 0;
+}
+
+static void on_fsr4_download(void) {
+    if (g_fsr4_busy || !g_fsr4_missing_n || !g_fsr4_base[0]) return;
+    char ask[256];
+    snprintf(ask, sizeof(ask),
+             "Download %d FSR 4 files (about 30 MB) from github.com/FireBurn/Q2RTX into fsr4_shaders?",
+             g_fsr4_missing_n);
+    if (MessageBoxA(g_main, ask, "Bloodborne", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    Fsr4Job* job = calloc(1, sizeof(*job));
+    if (!job) return;
+    snprintf(job->base, sizeof(job->base), "%s", g_fsr4_base);
+    snprintf(job->folder, sizeof(job->folder), "%s\\fsr4_shaders", g_root);
+    for (int i = 0; i < g_fsr4_missing_n; ++i) job->names[job->n++] = _strdup(g_fsr4_missing[i]);
+    g_fsr4_busy = 1;
+    EnableWindow(GetDlgItem(g_pages[PG_GRAPHICS], ID_FSR4_DOWNLOAD), FALSE);
+    HANDLE t = CreateThread(NULL, 0, fsr4_thread, job, 0, NULL);
+    if (t) CloseHandle(t);
+}
+
+static void on_fsr4_progress(int done, int total) {
+    HWND bar = GetDlgItem(g_pages[PG_GRAPHICS], ID_FSR4_BAR);
+    SendMessageA(bar, PBM_SETRANGE32, 0, total);
+    SendMessageA(bar, PBM_SETPOS, (WPARAM)done, 0);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Downloading FSR 4 assets... %d of %d files", done, total);
+    fsr4_say(msg);
+    status(msg);
+}
+
+static void on_fsr4_done(int ok, char* msg) {
+    g_fsr4_busy = 0;
+    fsr4_refresh();
+    if (ok) {
+        status("FSR 4 assets downloaded.");
+    } else if (msg) {
+        MessageBoxA(g_main, msg, "Bloodborne", MB_OK | MB_ICONERROR);
+    }
+    free(msg);
+}
+
+static void build_fsr4_group(HWND page, int y) {
+    HWND group = CreateWindowA("BUTTON", "FSR 4 assets", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, S(6), S(y),
+                               S(PAGE_W - 12), S(76), page, NULL, NULL, NULL);
+    SendMessageA(group, WM_SETFONT, (WPARAM)g_font, 1);
+    HWND say = w_label(page, ID_FSR4_STATUS, "", 14, y + 16, PAGE_W - 28);
+    SetWindowPos(say, NULL, S(14), S(y + 16), S(PAGE_W - 28), S(26), SWP_NOZORDER);
+    CreateWindowA(PROGRESS_CLASSA, "", WS_CHILD | WS_VISIBLE, S(14), S(y + 48), S(250), S(14), page,
+                  (HMENU)(INT_PTR)ID_FSR4_BAR, NULL, NULL);
+    HWND button = w_button(page, ID_FSR4_DOWNLOAD, "Download FSR 4 assets", 272, y + 44, 116, 23);
+    SetWindowPos(button, NULL, S(272), S(y + 44), S(116), S(23), SWP_NOZORDER);
+    EnableWindow(button, FALSE);
+}
+
 /* --- Trophies tab: the unlocks the game made, with the trophy list of the Python launcher ---
  * scripts/launcher_trophies.py prints one line per trophy (id, set, grade, name, description,
  * unlock time); the list is the launcher's own bbport_trophies.py, not a copy. */
@@ -1783,6 +1922,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             ShellExecuteA(g_main, "open", g_release.page_url[0] ? g_release.page_url : BB_RELEASES_PAGE, NULL, NULL,
                           SW_SHOWNORMAL);
         else if (id == ID_UPDATE_CHECK) update_check(1);
+        else if (id == ID_FSR4_DOWNLOAD) on_fsr4_download();
         else if (id == ID_TROPHY_REFRESH) trophies_refresh();
         else if (id == ID_TROPHY_FILTER && HIWORD(wp) == CBN_SELCHANGE) trophies_fill();
         else if (id == ID_LOG_COPY) log_copy();
@@ -1833,6 +1973,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         }
         MessageBoxA(g_main, (const char*)lp, "Bloodborne", MB_OK | MB_ICONERROR);
         return 0;
+    case WM_FSR4_PROGRESS:
+        on_fsr4_progress((int)wp, (int)lp);
+        return 0;
+    case WM_FSR4_DONE:
+        on_fsr4_done((int)wp, (char*)lp);
+        return 0;
     case WM_UPDATE_READY:
         DestroyWindow(g_main); /* the installer takes over once this process has ended */
         return 0;
@@ -1866,6 +2012,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         }
         if (n->idFrom == ID_TABS && n->code == TCN_SELCHANGE) {
             show_page(TabCtrl_GetCurSel(g_tabs));
+            if (TabCtrl_GetCurSel(g_tabs) == PG_GRAPHICS && !g_fsr4_known) fsr4_refresh();
             if (TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
             if (TabCtrl_GetCurSel(g_tabs) == PG_TROPHIES &&
                 (!g_trophy_n || GetTickCount() - g_trophy_tick > 5000))
@@ -1913,7 +2060,7 @@ static HFONT make_font(void) {
 }
 
 static void build_ui(void) {
-    INITCOMMONCONTROLSEX icc = {.dwSize = sizeof(icc), .dwICC = ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES};
+    INITCOMMONCONTROLSEX icc = {.dwSize = sizeof(icc), .dwICC = ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES | ICC_PROGRESS_CLASS};
     InitCommonControlsEx(&icc);
     g_tabs = CreateWindowA(WC_TABCONTROLA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TABS |
                            TCS_MULTILINE, S(TABS_X), S(TABS_Y), S(TABS_W), S(TABS_H), g_main,
@@ -1926,6 +2073,8 @@ static void build_ui(void) {
         if (i == PG_PLAY) {
             int top = build_play_banner(g_pages[i]);
             build_play_shortcuts(g_pages[i], build_page(i, top));
+        } else if (i == PG_GRAPHICS) {
+            build_fsr4_group(g_pages[i], build_page(i, 8) + 4);
         } else if (i == PG_ADV) {
             int end = build_page(i, 8);
             char ver[64];
@@ -2024,6 +2173,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             TabCtrl_SetCurSel(g_tabs, sel);
             show_page(sel);
             if (sel == PG_LOG) log_reload(0);
+            if (sel == PG_GRAPHICS) fsr4_refresh();
             if (sel == PG_TROPHIES) trophies_refresh();
         }
     }

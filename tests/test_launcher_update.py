@@ -44,6 +44,12 @@ class Release(http.server.BaseHTTPRequestHandler):
                            {'name': 'package.zip', 'browser_download_url': f'http://127.0.0.1:{self.port}/package.zip'}],
             }).encode()
             kind = 'application/json'
+        elif self.path.startswith('/fsr/'):
+            name = self.path[len('/fsr/'):]
+            if name.startswith('missing'):
+                self.send_error(404)
+                return
+            body, kind = name.encode(), 'application/octet-stream'
         elif self.path == '/package.zip':
             body, kind = self.zip_bytes, 'application/zip'
         else:

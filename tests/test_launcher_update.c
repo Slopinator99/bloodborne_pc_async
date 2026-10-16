@@ -20,6 +20,11 @@ static void on_progress(int pct, void* context) {
     ++calls;
 }
 
+static void count_progress(int done, int total, void* context) {
+    (void)total;
+    *(int*)context = done;
+}
+
 static int file_has(const char* path, const char* text) {
     FILE* f = fopen(path, "rb");
     if (!f) return 0;
@@ -107,6 +112,33 @@ int main(int argc, char** argv) {
 
     /* a missing source is a failure, not success */
     CHECK(!install_copy("C:\\no\\such\\folder", install, skip, 1));
+
+    /* a list of files: all arrive, a missing one stops the run with its index */
+    char fsr[MAX_PATH], fsr_base[256];
+    snprintf(fsr, sizeof(fsr), "%s\\fsr", dir);
+    snprintf(fsr_base, sizeof(fsr_base), "http://127.0.0.1:%d/fsr", port);
+    char* good[] = {"rcas.spv", "a_pass1.spv", "b_pre.spv"};
+    last_pct = -1;
+    int done_seen = 0, total_seen = 0;
+    CHECK(download_files(fsr_base, good, 3, fsr, count_progress, &done_seen, NULL));
+    (void)total_seen;
+    CHECK(done_seen == 3);
+    snprintf(probe, sizeof(probe), "%s\\a_pass1.spv", fsr);
+    CHECK(file_has(probe, "a_pass1.spv"));              /* the server answers with the name */
+    snprintf(probe, sizeof(probe), "%s\\rcas.spv.part", fsr);
+    CHECK(GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES);
+    char* mixed[] = {"c_one.spv", "missing_two.spv", "d_three.spv"};
+    int failed = -1;
+    CHECK(!download_files(fsr_base, mixed, 3, fsr, NULL, NULL, &failed));
+    CHECK(failed == 1);
+    snprintf(probe, sizeof(probe), "%s\\c_one.spv", fsr);
+    CHECK(file_has(probe, "c_one.spv"));                /* before the failure: kept */
+    snprintf(probe, sizeof(probe), "%s\\missing_two.spv", fsr);
+    CHECK(GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES);
+    snprintf(probe, sizeof(probe), "%s\\missing_two.spv.part", fsr);
+    CHECK(GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES);
+    snprintf(probe, sizeof(probe), "%s\\d_three.spv", fsr);
+    CHECK(GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES);   /* after it: not tried */
 
     /* cleanup */
     rmtree(unpacked);
