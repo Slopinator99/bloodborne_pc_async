@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "bb-settings.h"
 
@@ -38,6 +39,11 @@
 #define ID_LOG_CLEAR 5102
 #define ID_LOG_OPEN 5103
 #define LOG_TIMER 1
+#define ID_TROPHY_LIST 5200
+#define ID_TROPHY_FILTER 5201
+#define ID_TROPHY_REFRESH 5202
+#define ID_TROPHY_SUMMARY 5203
+#define ID_TROPHY_DETAIL 5204
 #define ID_FIELD_BASE 1000  /* field i: control 1000+i */
 #define ID_BROWSE_BASE 2000 /* folder field i: browse button 2000+i */
 #define ID_VALUE_BASE 3000  /* slider field i: value text 3000+i */
@@ -45,11 +51,11 @@
 /* Layout, in unscaled pixels (S() applies the DPI). Compact and classic: a property-sheet style
  * window, 8 pt dialog font, group boxes, no visual styles (see bb-launcher.manifest). */
 #define WIN_W 420
-#define WIN_H 392
+#define WIN_H 418
 #define TABS_X 6
 #define TABS_Y 6
 #define TABS_W 408
-#define TABS_H 356
+#define TABS_H 382
 #define PAGE_W 396
 #define LABEL_X 10
 #define LABEL_W 118
@@ -103,9 +109,9 @@ static const char* kReadbackL[] = {"Relaxed (default)", "Off", "Precise"};
 /* --- the field table --- */
 enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER, K_LIST };
 enum { ST_INI, ST_APP };
-enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_MODS, PG_ADV, PG_LOG, PG_COUNT };
+enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_MODS, PG_TROPHIES, PG_ADV, PG_LOG, PG_COUNT };
 static const char* kPageNames[PG_COUNT] = {"Play", "Graphics", "Display", "Game",
-                                           "Cheats", "Mods", "Advanced", "Log"};
+                                           "Cheats", "Mods", "Trophies", "Advanced", "Log"};
 
 typedef struct {
     int page, kind, store;
@@ -899,13 +905,13 @@ static int run_capture(char* cmd, char* out, size_t n) {
     return code == 0;
 }
 
-/* The command running scripts/launcher_lists.py: through the frozen runtime when there is one
+/* The command running scripts/<script_name> (launcher_lists.py, launcher_trophies.py): through the frozen runtime when there is one
  * (--script), else through Python in a source tree. */
-static void helper_command(const char* args, char* cmd, size_t n) {
+static void helper_command(const char* script_name, const char* args, char* cmd, size_t n) {
     char exedir[MAX_PATH], frozen[MAX_PATH], script[MAX_PATH + 32];
     GetModuleFileNameA(NULL, exedir, sizeof(exedir));
     *strrchr(exedir, '\\') = 0;
-    snprintf(script, sizeof(script), "%s\\scripts\\launcher_lists.py", g_root);
+    snprintf(script, sizeof(script), "%s\\scripts\\%s", g_root, script_name);
     frozen_runtime(exedir, frozen, sizeof(frozen));
     if (GetFileAttributesA(frozen) == INVALID_FILE_ATTRIBUTES) frozen_runtime(g_root, frozen, sizeof(frozen));
     if (GetFileAttributesA(frozen) != INVALID_FILE_ATTRIBUTES) {
@@ -945,7 +951,7 @@ static void lists_refresh(void) {
     trim_slashes(mods);
     trim_slashes(patches);
     snprintf(args, sizeof(args), "\"%s\" \"%s\" 01.09", mods, patches);
-    helper_command(args, cmd, sizeof(cmd));
+    helper_command("launcher_lists.py", args, cmd, sizeof(cmd));
     status("Reading mods and patches...");
     if (!run_capture(cmd, out, sizeof(out))) {
         status("Could not list mods and patches (no runtime or Python found?).");
@@ -1136,6 +1142,129 @@ static void on_browse(int index) {
     swprintf(title, sizeof(title) / sizeof(title[0]), L"Pick a folder");
     pick_folder_into(g_pages[f->page], f->id, title);
     if (!strcmp(f->key, "mods_dir") || !strcmp(f->key, "patches_dir")) lists_refresh();
+}
+
+static void log_path(char* out, size_t n);
+
+/* --- Trophies tab: the unlocks the game made, with the trophy list of the Python launcher ---
+ * scripts/launcher_trophies.py prints one line per trophy (id, set, grade, name, description,
+ * unlock time); the list is the launcher's own bbport_trophies.py, not a copy. */
+#define TROPHY_MAX 64
+typedef struct {
+    int id;
+    char set[32], grade[16], name[100], text[220];
+    long long when;
+} Trophy;
+static Trophy g_trophies[TROPHY_MAX];
+static int g_trophy_n;
+static DWORD g_trophy_tick;
+
+static void trophy_dir(char* out, size_t n) {
+    GetWindowTextA(field_by_key("user_dir")->hwnd, out, (int)n);
+    if (!out[0]) snprintf(out, n, "%s\\user", g_root);
+    trim_slashes(out);
+}
+
+static void trophies_fill(void) {
+    HWND lv = GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_LIST);
+    int filter = (int)SendMessageA(GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_FILTER), CB_GETCURSEL, 0, 0);
+    static const char* grades[] = {"platinum", "gold", "silver", "bronze"};
+    static const char* names[] = {"Platinum", "Gold", "Silver", "Bronze"};
+    int have[4] = {0}, total[4] = {0}, earned = 0;
+    ListView_DeleteAllItems(lv);
+    int row = 0;
+    for (int i = 0; i < g_trophy_n; ++i) {
+        const Trophy* t = &g_trophies[i];
+        int g = 0;
+        while (g < 3 && strcmp(t->grade, grades[g])) ++g;
+        ++total[g];
+        if (t->when) {
+            ++have[g];
+            ++earned;
+        }
+        if ((filter == 1 && !t->when) || (filter == 2 && t->when)) continue;
+        char grade[48], when[32] = "Locked";
+        snprintf(grade, sizeof(grade), "%s%s", names[g], strcmp(t->set, "Bloodborne") ? " (DLC)" : "");
+        if (t->when) {
+            time_t tt = (time_t)t->when;
+            struct tm* tm = localtime(&tt);
+            if (tm) strftime(when, sizeof(when), "%d %b %Y", tm);
+        }
+        LVITEMA it = {.mask = LVIF_TEXT | LVIF_PARAM, .iItem = row, .pszText = (char*)t->name, .lParam = i};
+        SendMessageA(lv, LVM_INSERTITEMA, 0, (LPARAM)&it);
+        ListView_SetItemText(lv, row, 1, grade);
+        ListView_SetItemText(lv, row, 2, when);
+        ListView_SetItemText(lv, row, 3, (char*)t->text);
+        ++row;
+    }
+    SetWindowTextA(GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_DETAIL), "");
+    char summary[256];
+    snprintf(summary, sizeof(summary),
+             "%d of %d trophies earned (%d%%)\nPlatinum %d/%d   Gold %d/%d   Silver %d/%d   Bronze %d/%d",
+             earned, g_trophy_n, g_trophy_n ? earned * 100 / g_trophy_n : 0, have[0], total[0],
+             have[1], total[1], have[2], total[2], have[3], total[3]);
+    SetWindowTextA(GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_SUMMARY), summary);
+}
+
+static void trophies_refresh(void) {
+    char saves[MAX_PATH], args[2 * MAX_PATH + 16], cmd[4 * MAX_PATH], log[MAX_PATH + 24];
+    static char out[65536];
+    trophy_dir(saves, sizeof(saves));
+    log_path(log, sizeof(log));
+    snprintf(args, sizeof(args), "\"%s\" \"%s\"", saves, log);
+    helper_command("launcher_trophies.py", args, cmd, sizeof(cmd));
+    status("Reading trophies...");
+    if (!run_capture(cmd, out, sizeof(out))) {
+        status("Could not read the trophies (no runtime or Python found?).");
+        return;
+    }
+    g_trophy_n = 0;
+    for (char* line = strtok(out, "\n"); line && g_trophy_n < TROPHY_MAX; line = strtok(NULL, "\n")) {
+        line[strcspn(line, "\r")] = 0;
+        char* f[7];
+        int n = 0;
+        for (char* p = line; n < 7; ) {
+            f[n++] = p;
+            char* tab = strchr(p, '\t');
+            if (!tab) break;
+            *tab = 0;
+            p = tab + 1;
+        }
+        if (n < 7 || strcmp(f[0], "trophy") != 0) continue;
+        Trophy* t = &g_trophies[g_trophy_n++];
+        t->id = atoi(f[1]);
+        snprintf(t->set, sizeof(t->set), "%s", f[2]);
+        snprintf(t->grade, sizeof(t->grade), "%s", f[3]);
+        snprintf(t->name, sizeof(t->name), "%s", f[4]);
+        snprintf(t->text, sizeof(t->text), "%s", f[5]);
+        t->when = _atoi64(f[6]);
+    }
+    g_trophy_tick = GetTickCount();
+    trophies_fill();
+    status("Trophies updated.");
+}
+
+static void build_trophies_page(HWND page) {
+    HWND summary = w_label(page, ID_TROPHY_SUMMARY, "", 10, 8, PAGE_W - 24);
+    SetWindowPos(summary, NULL, S(10), S(8), S(PAGE_W - 24), S(30), SWP_NOZORDER);
+    w_label(page, 0, "Show:", 10, 46, 40);
+    static const char* shown[] = {"All", "Earned", "Locked"};
+    HWND combo = w_combo(page, ID_TROPHY_FILTER, 52, 42, 110, shown, 3);
+    SendMessageA(combo, CB_SETCURSEL, 0, 0);
+    w_button(page, ID_TROPHY_REFRESH, "Refresh", PAGE_W - 6 - 74, 41, 74, 23);
+    HWND lv = CreateWindowExA(WS_EX_CLIENTEDGE, WC_LISTVIEWA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                              LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, S(6), S(70),
+                              S(PAGE_W - 12), S(196), page, (HMENU)(INT_PTR)ID_TROPHY_LIST, NULL, NULL);
+    HWND detail = w_label(page, ID_TROPHY_DETAIL, "", 10, 272, PAGE_W - 24);
+    SetWindowPos(detail, NULL, S(10), S(272), S(PAGE_W - 24), S(30), SWP_NOZORDER);
+    SendMessageA(lv, WM_SETFONT, (WPARAM)g_font, 1);
+    ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
+    static const char* heads[] = {"Trophy", "Grade", "Earned", "Description"};
+    static const int widths[] = {150, 78, 78, 560};
+    for (int i = 0; i < 4; ++i) {
+        LVCOLUMNA col = {.mask = LVCF_TEXT | LVCF_WIDTH, .pszText = (char*)heads[i], .cx = S(widths[i])};
+        SendMessageA(lv, LVM_INSERTCOLUMNA, (WPARAM)i, (LPARAM)&col);
+    }
 }
 
 /* --- Log tab: the tail of the game's output (launcher-run.log), refreshed while shown --- */
@@ -1439,6 +1568,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_MOD_UP) mod_move(-1);
         else if (id == ID_MOD_DOWN) mod_move(1);
         else if (id == ID_LISTS_REFRESH) lists_refresh();
+        else if (id == ID_TROPHY_REFRESH) trophies_refresh();
+        else if (id == ID_TROPHY_FILTER && HIWORD(wp) == CBN_SELCHANGE) trophies_fill();
         else if (id == ID_LOG_COPY) log_copy();
         else if (id == ID_LOG_CLEAR) log_clear();
         else if (id == ID_LOG_OPEN) on_open(2);
@@ -1481,9 +1612,25 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_NOTIFY: {
         NMHDR* n = (NMHDR*)lp;
+        if (n->idFrom == ID_TROPHY_LIST && n->code == LVN_ITEMCHANGED) {
+            const NMLISTVIEW* nm = (const NMLISTVIEW*)lp;
+            if ((nm->uNewState & LVIS_SELECTED) && !(nm->uOldState & LVIS_SELECTED)) {
+                LVITEMA it = {.mask = LVIF_PARAM, .iItem = nm->iItem};
+                SendMessageA(n->hwndFrom, LVM_GETITEMA, 0, (LPARAM)&it);
+                if (it.lParam >= 0 && it.lParam < g_trophy_n) {
+                    char text[360];
+                    snprintf(text, sizeof(text), "%s: %s", g_trophies[it.lParam].name,
+                             g_trophies[it.lParam].text);
+                    SetWindowTextA(GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_DETAIL), text);
+                }
+            }
+        }
         if (n->idFrom == ID_TABS && n->code == TCN_SELCHANGE) {
             show_page(TabCtrl_GetCurSel(g_tabs));
             if (TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
+            if (TabCtrl_GetCurSel(g_tabs) == PG_TROPHIES &&
+                (!g_trophy_n || GetTickCount() - g_trophy_tick > 5000))
+                trophies_refresh();
         }
         break;
     }
@@ -1529,8 +1676,8 @@ static HFONT make_font(void) {
 static void build_ui(void) {
     INITCOMMONCONTROLSEX icc = {.dwSize = sizeof(icc), .dwICC = ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES};
     InitCommonControlsEx(&icc);
-    g_tabs = CreateWindowA(WC_TABCONTROLA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TABS,
-                           S(TABS_X), S(TABS_Y), S(TABS_W), S(TABS_H), g_main,
+    g_tabs = CreateWindowA(WC_TABCONTROLA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_TABS |
+                           TCS_MULTILINE, S(TABS_X), S(TABS_Y), S(TABS_W), S(TABS_H), g_main,
                            (HMENU)(INT_PTR)ID_TABS, NULL, NULL);
     SendMessageA(g_tabs, WM_SETFONT, (WPARAM)g_font, 1);
     for (int i = 0; i < PG_COUNT; ++i) {
@@ -1542,6 +1689,8 @@ static void build_ui(void) {
             build_play_shortcuts(g_pages[i], build_page(i, top));
         } else if (i == PG_LOG) {
             build_log_page(g_pages[i]);
+        } else if (i == PG_TROPHIES) {
+            build_trophies_page(g_pages[i]);
         } else {
             build_page(i, 8);
         }
@@ -1629,6 +1778,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             TabCtrl_SetCurSel(g_tabs, sel);
             show_page(sel);
             if (sel == PG_LOG) log_reload(0);
+            if (sel == PG_TROPHIES) trophies_refresh();
         }
     }
     SetTimer(g_main, LOG_TIMER, 1500, NULL);
