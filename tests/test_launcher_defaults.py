@@ -7,7 +7,7 @@ import sys
 import unittest
 
 C_SOURCE = ROOT / 'packaging' / 'windows' / 'bb-launcher.c'
-FIELD = re.compile(r'FLD_(CHECK|COMBO|TEXT|FOLDER|SLIDER)\(PG_\w+,\s*(ST_INI|ST_APP),\s*"(\w+)",(.*?)\),?\n', re.S)
+FIELD = re.compile(r'FLD_(CHECK|COMBO|TEXT|FOLDER|SLIDER|PASSWORD)\(PG_\w+,\s*(ST_INI|ST_APP),\s*"(\w+)",(.*?)\),?\n', re.S)
 
 # Where the C launcher starts differently on purpose: it defaults to the TAA setup that needs no
 # downloaded FSR 4 assets, a 60 FPS cap and the intro skipped (the game's own AA is off with TAA).

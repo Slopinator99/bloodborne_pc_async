@@ -72,6 +72,16 @@
 #define ID_SHORTCUT 5600
 #define ID_STEAM 5601
 #define ID_PORT_FOLDER 5602
+#define ID_OL_ACCOUNT 5700
+#define ID_OL_SIGNIN 5701
+#define ID_OL_SIGNMSG 5702
+#define ID_OL_CODE 5703
+#define ID_OL_COPY 5704
+#define ID_OL_TEST 5705
+#define ID_OL_RESULT 5706
+#define WM_ONLINE_LINE (WM_APP + 7)   /* lParam: malloc'd line of bbbridge-cli's output */
+#define WM_ONLINE_DONE (WM_APP + 8)   /* the sign-in process ended */
+#define WM_ONLINE_CHECK (WM_APP + 9)  /* lParam: malloc'd text of the connection test */
 #define WM_FSR4_DONE (WM_APP + 6)       /* wParam: 1 when all arrived; lParam: malloc'd message or NULL */
 
 /* This build, and where newer ones come from: the releases of the fork. The tag's numbers are
@@ -138,16 +148,19 @@ static const char* kVoiceL[] = {"As in the game", "English", "Portugu\xc3\xaas (
                                 "Fran\xc3\xa7" "ais", "Italiano", "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"};
 static const char* kDrawPipeV[] = {"", "1", "0"};
 static const char* kDrawPipeL[] = {"Auto (8+ threads)", "On", "Off (more stable)"};
+static const char* kPoolV[] = {"shadnet", "huntersdream"};
+static const char* kPoolL[] = {"shadNet server", "The Hunter's Dream (with bbhost players)"};
 static const char* kReadbackV[] = {"", "0", "2"};
 static const char* kReadbackL[] = {"Relaxed (default)", "Off", "Precise"};
 
 /* --- the field table --- */
-enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER, K_LIST };
+enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER, K_LIST, K_PASSWORD, K_AREA, K_CUSTOM };
 enum { ST_INI, ST_APP };
-enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_MODS, PG_TROPHIES, PG_CONTROLS, PG_ADV, PG_LOG,
-       PG_COUNT };
+enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_ONLINE, PG_MODS, PG_TROPHIES, PG_CONTROLS, PG_ADV,
+       PG_LOG, PG_COUNT };
 static const char* kPageNames[PG_COUNT] = {"Play", "Graphics", "Display", "Game",
-                                           "Cheats", "Mods", "Trophies", "Controls", "Advanced", "Log"};
+                                           "Cheats", "Online", "Mods", "Trophies", "Controls", "Advanced",
+                                           "Log"};
 
 typedef struct {
     int page, kind, store;
@@ -163,8 +176,14 @@ typedef struct {
 } Field;
 
 /* Headings and lists carry no value of their own (n is a list's height in pixels). */
-#define HAS_VALUE(f) ((f)->kind != K_HEAD && (f)->kind != K_LIST)
+#define HAS_VALUE(f) ((f)->kind != K_HEAD && (f)->kind != K_LIST && (f)->kind != K_AREA && (f)->kind != K_CUSTOM)
 #define FLD_LIST(pg, key, height) {pg, K_LIST, ST_APP, key, "", "", NULL, NULL, height, "", 0, NULL}
+/* PASSWORD: a text box showing dots. AREA: from here on the fields belong to the pool in mask (1
+ * shadNet, 2 Hunter's Dream) and share one region of the page; mask 0 ends it. CUSTOM: n pixels
+ * kept free for controls made by hand (the field's id then holds the y they start at). */
+#define FLD_PASSWORD(pg, st, key, label, dflt) {pg, K_PASSWORD, st, key, "", label, NULL, NULL, 0, dflt, 0, NULL}
+#define FLD_AREA(pg, mask) {pg, K_AREA, ST_APP, "", "", "", NULL, NULL, mask, "", 0, NULL}
+#define FLD_CUSTOM(pg, key, height) {pg, K_CUSTOM, ST_APP, key, "", "", NULL, NULL, height, "", 0, NULL}
 #define FLD_HEAD(pg, label) {pg, K_HEAD, 0, "", "", label, NULL, NULL, 0, "", 0, NULL}
 #define FLD_CHECK(pg, st, key, legacy, label, dflt) \
     {pg, K_CHECK, st, key, legacy, label, NULL, NULL, 0, dflt, 0, NULL}
@@ -234,6 +253,23 @@ static Field g_fields[] = {
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_ragdoll", "", "Dark Souls-style ragdoll physics", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_circle_confirm", "", "Japanese buttons: Circle confirms, Cross dodges", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "quit_to_desktop", "", "Quit to Desktop in the title and System menus", "1"),
+    /* Online */
+    FLD_CHECK(PG_ONLINE, ST_APP, "online", "", "Play online (off: the game stays offline)", "0"),
+    FLD_COMBO(PG_ONLINE, ST_APP, "online_pool", "", "Co-op pool:", kPoolV, kPoolL, "shadnet"),
+    FLD_TEXT(PG_ONLINE, ST_APP, "online_community", "Game server:", "https://thehuntersdream.com"),
+    FLD_AREA(PG_ONLINE, 1),
+    FLD_HEAD(PG_ONLINE, "shadNet server (bells and summons)"),
+    FLD_TEXT(PG_ONLINE, ST_APP, "online_server", "Server address:", "srv.shadps4.net:31313"),
+    FLD_TEXT(PG_ONLINE, ST_APP, "online_webapi", "WebAPI address:", ""),
+    FLD_TEXT(PG_ONLINE, ST_APP, "online_npid", "Online ID (NPID):", ""),
+    FLD_PASSWORD(PG_ONLINE, ST_APP, "online_password", "Password:", ""),
+    FLD_AREA(PG_ONLINE, 2),
+    FLD_HEAD(PG_ONLINE, "The Hunter's Dream account"),
+    FLD_CUSTOM(PG_ONLINE, "hd_custom", 78),
+    FLD_CHECK(PG_ONLINE, ST_APP, "bridge_live_map", "", "Show me on the live map", "1"),
+    FLD_AREA(PG_ONLINE, 0),
+    FLD_CHECK(PG_ONLINE, ST_APP, "online_upnp", "", "UPnP (open a port on the router automatically)", "1"),
+    FLD_CUSTOM(PG_ONLINE, "test_custom", 74),
     /* Mods */
     FLD_HEAD(PG_MODS, "Mods"),
     FLD_CHECK(PG_MODS, ST_APP, "mods_enabled", "launcher_mods_on",
@@ -571,6 +607,8 @@ static void set_env(const char* name, const char* v) {
     SetEnvironmentVariableA(name, v);
 }
 
+static void apply_online_env(void);
+
 static void apply_env(void) {
     char v[1024], path[MAX_PATH + 16];
     cfg_get_str("game_dir", v, sizeof(v), "");
@@ -629,6 +667,8 @@ static void apply_env(void) {
     /* Unbuffered child output: the log file stays live while playing. */
     set_env("PYTHONUNBUFFERED", "1");
     set_env("PYTHONIOENCODING", "utf-8");
+
+    apply_online_env();
 
     if (cfg_get_str("extra_env", v, sizeof(v), "")) {
         for (char* tok = strtok(v, " "); tok; tok = strtok(NULL, " ")) {
@@ -717,15 +757,6 @@ static void on_run(void) {
         return;
     }
     if (!save_fields()) return;
-    /* Online play is set up in bb-runtime; this launcher cannot start it yet. */
-    char online[16];
-    if (cfg_get_str("online", online, sizeof(online), "0") && !strcmp(online, "1") &&
-        MessageBoxA(g_main,
-                    "Online play is turned on in your settings, but this launcher cannot start it "
-                    "yet (use bb-runtime for that).\n\nStart the game offline?",
-                    "Bloodborne", MB_YESNO | MB_ICONQUESTION) != IDYES) {
-        return;
-    }
     apply_env();
     /* Packaged: the frozen runtime next to us runs run.py itself (--run),
      * so players need no Python. Dev tree: python run.py. */
@@ -1896,6 +1927,300 @@ static void on_steam(void) {
     }
 }
 
+/* The controls of the Online page that belong to one pool only (mask 1 shadNet, 2 Hunter's Dream),
+ * shown or hidden when the pool changes. */
+#define POOL_CTL_MAX 96
+static HWND g_pool_ctl[POOL_CTL_MAX];
+static int g_pool_mask[POOL_CTL_MAX], g_pool_n;
+
+/* The direct children of a page, to tell which controls a piece of code made. */
+typedef struct {
+    HWND h[512];
+    int n;
+} Kids;
+
+static void kids_of(HWND page, Kids* k) {
+    k->n = 0;
+    for (HWND h = GetWindow(page, GW_CHILD); h && k->n < 512; h = GetWindow(h, GW_HWNDNEXT)) k->h[k->n++] = h;
+}
+
+/* Registers every control of page that is not in `before`. */
+static void pool_register_new(HWND page, const Kids* before, int mask) {
+    Kids now;
+    kids_of(page, &now);
+    for (int i = 0; i < now.n; ++i) {
+        int known = 0;
+        for (int j = 0; j < before->n && !known; ++j) known = before->h[j] == now.h[i];
+        if (!known && g_pool_n < POOL_CTL_MAX) {
+            g_pool_ctl[g_pool_n] = now.h[i];
+            g_pool_mask[g_pool_n++] = mask;
+        }
+    }
+}
+
+/* --- Online tab ---
+ * The shadNet / Hunter's Dream settings are ordinary fields (settings.json, shared with the
+ * Python launcher). scripts/launcher_online.py supplies what needs the Python launcher's rules:
+ * the connection test, the environment variables of the online settings, and the files of
+ * The Hunter's Dream sign-in. The Discord sign-in itself runs bbbridge-cli.exe here and streams
+ * its output into the page. */
+static char g_bridge_cli[MAX_PATH], g_bridge_folder[MAX_PATH], g_bridge_config[MAX_PATH];
+static char g_bridge_accounts[256];
+static int g_signing, g_checking;
+
+static void online_saves(char* out, size_t n) {
+    GetWindowTextA(field_by_key("user_dir")->hwnd, out, (int)n);
+    if (!out[0]) snprintf(out, n, "%s\\user", g_root);
+    trim_slashes(out);
+}
+
+/* An argument for a command line: quotes inside it become apostrophes, and no trailing slash
+ * can swallow the closing quote. */
+static void cmd_arg(const char* in, char* out, size_t n) {
+    size_t o = 0;
+    for (; *in && o + 2 < n; ++in) out[o++] = *in == '"' ? '\'' : *in;
+    while (o && out[o - 1] == '\\') --o;
+    out[o] = 0;
+}
+
+static HWND ol(int id) {
+    return GetDlgItem(g_pages[PG_ONLINE], id);
+}
+
+static void online_show_accounts(void) {
+    char text[300];
+    if (g_bridge_accounts[0]) snprintf(text, sizeof(text), "Signed in as %s", g_bridge_accounts);
+    else snprintf(text, sizeof(text), "Not signed in");
+    SetWindowTextA(ol(ID_OL_ACCOUNT), text);
+}
+
+static void bridge_load(void) {
+    char saves[MAX_PATH], args[MAX_PATH + 16], cmd[4 * MAX_PATH];
+    static char out[8192];
+    online_saves(saves, sizeof(saves));
+    char a[MAX_PATH];
+    cmd_arg(saves, a, sizeof(a));
+    snprintf(args, sizeof(args), "bridge \"%s\"", a);
+    helper_command("launcher_online.py", args, cmd, sizeof(cmd));
+    g_bridge_cli[0] = g_bridge_folder[0] = g_bridge_config[0] = g_bridge_accounts[0] = 0;
+    if (run_capture(cmd, out, sizeof(out))) {
+        for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
+            line[strcspn(line, "\r")] = 0;
+            if (!strncmp(line, "cli\t", 4)) snprintf(g_bridge_cli, sizeof(g_bridge_cli), "%s", line + 4);
+            else if (!strncmp(line, "folder\t", 7)) snprintf(g_bridge_folder, sizeof(g_bridge_folder), "%s", line + 7);
+            else if (!strncmp(line, "config\t", 7)) snprintf(g_bridge_config, sizeof(g_bridge_config), "%s", line + 7);
+            else if (!strncmp(line, "account\t", 8)) {
+                if (g_bridge_accounts[0]) strncat(g_bridge_accounts, ", ", sizeof(g_bridge_accounts) - strlen(g_bridge_accounts) - 1);
+                strncat(g_bridge_accounts, line + 8, sizeof(g_bridge_accounts) - strlen(g_bridge_accounts) - 1);
+            }
+        }
+    }
+    online_show_accounts();
+}
+
+static void online_apply_pool(void) {
+    int sel = (int)SendMessageA(field_by_key("online_pool")->hwnd, CB_GETCURSEL, 0, 0);
+    int bit = sel == 1 ? 2 : 1;
+    for (int i = 0; i < g_pool_n; ++i) ShowWindow(g_pool_ctl[i], (g_pool_mask[i] & bit) ? SW_SHOW : SW_HIDE);
+}
+
+static DWORD WINAPI signin_thread(LPVOID unused) {
+    (void)unused;
+    SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa), .bInheritHandle = TRUE};
+    HANDLE rd, wr;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) {
+        PostMessageA(g_main, WM_ONLINE_LINE, 0, (LPARAM)_strdup("failed: could not make a pipe"));
+        PostMessageA(g_main, WM_ONLINE_DONE, 0, 0);
+        return 0;
+    }
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+    STARTUPINFOA si = {.cb = sizeof(si), .dwFlags = STARTF_USESTDHANDLES, .hStdInput = nul, .hStdOutput = wr, .hStdError = wr};
+    char cmd[3 * MAX_PATH];
+    snprintf(cmd, sizeof(cmd), "\"%s\" --config \"%s\" --link-discord", g_bridge_cli, g_bridge_config);
+    PROCESS_INFORMATION pi;
+    BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, g_bridge_folder, &si, &pi);
+    CloseHandle(wr);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (!ok) {
+        PostMessageA(g_main, WM_ONLINE_LINE, 0, (LPARAM)_strdup("failed: bbbridge-cli.exe could not be started"));
+    } else {
+        char line[1024];
+        size_t used = 0;
+        char c;
+        DWORD got;
+        while (ReadFile(rd, &c, 1, &got, NULL) && got) {
+            if (c == '\n' || used + 1 >= sizeof(line)) {
+                line[used] = 0;
+                while (used && (line[used - 1] == '\r' || line[used - 1] == ' ')) line[--used] = 0;
+                if (used) PostMessageA(g_main, WM_ONLINE_LINE, 0, (LPARAM)_strdup(line));
+                used = 0;
+            } else {
+                line[used++] = c;
+            }
+        }
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    CloseHandle(rd);
+    PostMessageA(g_main, WM_ONLINE_DONE, 0, 0);
+    return 0;
+}
+
+static void on_online_signin(void) {
+    if (g_signing) return;
+    bridge_load();
+    if (!g_bridge_cli[0]) {
+        SetWindowTextA(ol(ID_OL_SIGNMSG), "bbbridge-cli.exe is missing from this installation.");
+        return;
+    }
+    if (!g_bridge_config[0]) {
+        SetWindowTextA(ol(ID_OL_SIGNMSG), "Sign-in failed: the bridge folder could not be made.");
+        return;
+    }
+    SetWindowTextA(ol(ID_OL_SIGNMSG), "Starting the sign-in...");
+    SetWindowTextA(ol(ID_OL_CODE), "");
+    EnableWindow(ol(ID_OL_COPY), FALSE);
+    g_signing = 1;
+    EnableWindow(ol(ID_OL_SIGNIN), FALSE);
+    HANDLE t = CreateThread(NULL, 0, signin_thread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+}
+
+/* One line of bbbridge-cli's output. */
+static void on_online_line(char* line) {
+    const char* open = "Open ";
+    const char* mid = " and enter the code ";
+    char* m = strstr(line, mid);
+    if (!strncmp(line, open, strlen(open)) && m) {
+        char url[512], code[64];
+        snprintf(url, sizeof(url), "%.*s", (int)(m - line - strlen(open)), line + strlen(open));
+        snprintf(code, sizeof(code), "%s", m + strlen(mid));
+        char msg[700];
+        snprintf(msg, sizeof(msg), "In the page that opened (%s), sign in with Discord and enter this code:", url);
+        SetWindowTextA(ol(ID_OL_SIGNMSG), msg);
+        SetWindowTextA(ol(ID_OL_CODE), code);
+        EnableWindow(ol(ID_OL_COPY), TRUE);
+        if (!strncmp(url, "http", 4)) ShellExecuteA(g_main, "open", url, NULL, NULL, SW_SHOWNORMAL);
+    } else if (!strncmp(line, "signed in as ", 13)) {
+        SetWindowTextA(ol(ID_OL_SIGNMSG), "");
+        SetWindowTextA(ol(ID_OL_CODE), "");
+        EnableWindow(ol(ID_OL_COPY), FALSE);
+        bridge_load();
+    } else if (!strncmp(line, "failed", 6)) {
+        const char* why = strchr(line, ':');
+        char msg[700];
+        snprintf(msg, sizeof(msg), "Sign-in failed: %s", why ? why + 1 + (why[1] == ' ') : line);
+        SetWindowTextA(ol(ID_OL_SIGNMSG), msg);
+        SetWindowTextA(ol(ID_OL_CODE), "");
+        EnableWindow(ol(ID_OL_COPY), FALSE);
+    }
+}
+
+static void on_online_copy_code(void) {
+    char code[64];
+    GetWindowTextA(ol(ID_OL_CODE), code, sizeof(code));
+    size_t len = strlen(code);
+    if (!len) return;
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, len + 1);
+    if (!mem) return;
+    memcpy(GlobalLock(mem), code, len + 1);
+    GlobalUnlock(mem);
+    if (OpenClipboard(g_main)) {
+        EmptyClipboard();
+        SetClipboardData(CF_TEXT, mem);
+        CloseClipboard();
+        status("The code was copied to the clipboard.");
+    } else {
+        GlobalFree(mem);
+    }
+}
+
+static char g_check_args[4 * MAX_PATH];
+
+static DWORD WINAPI online_check_thread(LPVOID unused) {
+    (void)unused;
+    char cmd[5 * MAX_PATH];
+    char* out = malloc(16384);
+    if (!out) return 0;
+    helper_command("launcher_online.py", g_check_args, cmd, sizeof(cmd));
+    if (!run_capture_ms(cmd, out, 16384, 60000) && !out[0]) snprintf(out, 16384, "The check could not run (no runtime or Python found?).");
+    PostMessageA(g_main, WM_ONLINE_CHECK, 0, (LPARAM)out);
+    return 0;
+}
+
+static void on_online_test(void) {
+    if (g_checking) return;
+    char server[256], webapi[256], community[256], saves[MAX_PATH], a[5][MAX_PATH];
+    GetWindowTextA(field_by_key("online_server")->hwnd, server, sizeof(server));
+    GetWindowTextA(field_by_key("online_webapi")->hwnd, webapi, sizeof(webapi));
+    GetWindowTextA(field_by_key("online_community")->hwnd, community, sizeof(community));
+    online_saves(saves, sizeof(saves));
+    int sel = (int)SendMessageA(field_by_key("online_pool")->hwnd, CB_GETCURSEL, 0, 0);
+    int on = SendMessageA(field_by_key("online")->hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    cmd_arg(server, a[0], MAX_PATH);
+    cmd_arg(webapi, a[1], MAX_PATH);
+    cmd_arg(community, a[2], MAX_PATH);
+    cmd_arg(saves, a[3], MAX_PATH);
+    snprintf(g_check_args, sizeof(g_check_args), "check \"%s\" \"%s\" \"%s\" %s \"%s\" %d", a[0], a[1], a[2],
+             sel == 1 ? "huntersdream" : "shadnet", a[3], on);
+    SetWindowTextA(ol(ID_OL_RESULT), "Checking...");
+    EnableWindow(ol(ID_OL_TEST), FALSE);
+    g_checking = 1;
+    HANDLE t = CreateThread(NULL, 0, online_check_thread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+}
+
+static void on_online_check_done(char* text) {
+    g_checking = 0;
+    EnableWindow(ol(ID_OL_TEST), TRUE);
+    /* The text is shown as UTF-8; a trailing newline would leave an empty line. */
+    size_t len = strlen(text);
+    while (len && (text[len - 1] == '\n' || text[len - 1] == '\r')) text[--len] = 0;
+    SetWindowTextA(ol(ID_OL_RESULT), text);
+    free(text);
+}
+
+/* The BB_ variables of the online settings, from the Python launcher's own rules. */
+static void apply_online_env(void) {
+    char v[16];
+    if (!(cfg_get_str("online", v, sizeof(v), "0") && !strcmp(v, "1"))) return;
+    char cmd[4 * MAX_PATH];
+    static char out[8192];
+    helper_command("launcher_online.py", "env", cmd, sizeof(cmd));
+    if (!run_capture(cmd, out, sizeof(out))) return;
+    for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
+        line[strcspn(line, "\r")] = 0;
+        char* eq = strchr(line, '=');
+        if (eq) {
+            *eq = 0;
+            set_env(line, eq + 1);
+        }
+    }
+}
+
+static void build_online_extras(HWND page) {
+    int y = field_by_key("hd_custom")->id;
+    Kids before;
+    kids_of(page, &before);
+    w_label(page, ID_OL_ACCOUNT, "", 14, y, 360);
+    w_button(page, ID_OL_SIGNIN, "Sign in with Discord", 14, y + 16, 132, 23);
+    HWND msg = w_label(page, ID_OL_SIGNMSG, "", 14, y + 44, PAGE_W - 40);
+    SetWindowPos(msg, NULL, S(14), S(y + 44), S(PAGE_W - 40), S(14), SWP_NOZORDER);
+    HWND code = w_label(page, ID_OL_CODE, "", 14, y + 60, 130);
+    SendMessageA(code, WM_SETFONT, (WPARAM)g_play_font, 1);
+    SetWindowPos(code, NULL, S(14), S(y + 60), S(130), S(18), SWP_NOZORDER);
+    HWND copy = w_button(page, ID_OL_COPY, "Copy", 152, y + 58, 52, 20);
+    EnableWindow(copy, FALSE);
+    pool_register_new(page, &before, 2);
+
+    int ty = field_by_key("test_custom")->id;
+    w_button(page, ID_OL_TEST, "Test connection", 10, ty + 2, 110, 23);
+    HWND result = w_label(page, ID_OL_RESULT, "", 10, ty + 30, PAGE_W - 24);
+    SetWindowPos(result, NULL, S(10), S(ty + 30), S(PAGE_W - 24), S(44), SWP_NOZORDER);
+}
+
 /* --- Trophies tab: the unlocks the game made, with the trophy list of the Python launcher ---
  * scripts/launcher_trophies.py prints one line per trophy (id, set, grade, name, description,
  * unlock time); the list is the launcher's own bbport_trophies.py, not a copy. */
@@ -2177,12 +2502,40 @@ static int build_page(int pg, int y0) {
     HWND page = g_pages[pg];
     int y = y0, ix = 0; /* ix: indent inside a group box */
     HWND group = NULL;
-    int group_y = 0;
+    int group_y = 0, area_mask = 0, area_y = -1, area_end = 0;
     for (int i = 0; i < NFIELDS; ++i) {
         Field* f = &g_fields[i];
         if (f->page != pg) continue;
         f->id = ID_FIELD_BASE + i;
+        Kids before;
+        kids_of(page, &before);
         switch (f->kind) {
+        case K_AREA:
+            if (group) {
+                end_group(group, group_y, &y);
+                group = NULL;
+            }
+            ix = 0;
+            if (y > area_end) area_end = y;
+            if (f->n == 0) {
+                y = area_end;
+            } else if (area_y < 0) {
+                area_y = y;
+            } else {
+                y = area_y;
+            }
+            area_mask = f->n;
+            break;
+        case K_CUSTOM:
+            f->id = y; /* where the hand-made controls start */
+            y += f->n;
+            break;
+        case K_PASSWORD:
+            w_label(page, 0, f->label, LABEL_X, y + 4, LABEL_W);
+            f->hwnd = w_edit(page, f->id, CTRL_X, y, CTRL_W);
+            SendMessageA(f->hwnd, EM_SETPASSWORDCHAR, (WPARAM)'*', 0);
+            y += ROW_H;
+            break;
         case K_HEAD:
             if (group) end_group(group, group_y, &y);
             if (y > y0) y += 4;
@@ -2249,6 +2602,7 @@ static int build_page(int pg, int y0) {
             y += ROW_H;
             break;
         }
+        if (area_mask && f->kind != K_AREA) pool_register_new(page, &before, area_mask);
     }
     if (group) end_group(group, group_y, &y);
     return y;
@@ -2329,6 +2683,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             ShellExecuteA(g_main, "open", g_release.page_url[0] ? g_release.page_url : BB_RELEASES_PAGE, NULL, NULL,
                           SW_SHOWNORMAL);
         else if (id == ID_UPDATE_CHECK) update_check(1);
+        else if (id == ID_OL_SIGNIN) on_online_signin();
+        else if (id == ID_OL_COPY) on_online_copy_code();
+        else if (id == ID_OL_TEST) on_online_test();
         else if (id == ID_SHORTCUT) on_shortcut();
         else if (id == ID_STEAM) on_steam();
         else if (id == ID_PORT_FOLDER) ShellExecuteA(g_main, "open", g_root, NULL, NULL, SW_SHOWNORMAL);
@@ -2351,6 +2708,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         } else if (id >= ID_FIELD_BASE && id < ID_FIELD_BASE + NFIELDS) {
             const Field* f = &g_fields[id - ID_FIELD_BASE];
             if (f->kind == K_CHECK && HIWORD(wp) == BN_CLICKED) exclusive_cheats(id);
+            if (!strcmp(f->key, "online_pool") && HIWORD(wp) == CBN_SELCHANGE) online_apply_pool();
             if (f->kind == K_FOLDER && !strcmp(f->key, "game_dir") && HIWORD(wp) == EN_CHANGE)
                 refresh_game_note();
         }
@@ -2385,6 +2743,17 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             update_say(msg);
         }
         MessageBoxA(g_main, (const char*)lp, "Bloodborne", MB_OK | MB_ICONERROR);
+        return 0;
+    case WM_ONLINE_LINE:
+        on_online_line((char*)lp);
+        free((char*)lp);
+        return 0;
+    case WM_ONLINE_DONE:
+        g_signing = 0;
+        EnableWindow(ol(ID_OL_SIGNIN), TRUE);
+        return 0;
+    case WM_ONLINE_CHECK:
+        on_online_check_done((char*)lp);
         return 0;
     case WM_FSR4_PROGRESS:
         on_fsr4_progress((int)wp, (int)lp);
@@ -2439,6 +2808,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             show_page(TabCtrl_GetCurSel(g_tabs));
             if (TabCtrl_GetCurSel(g_tabs) == PG_GRAPHICS && !g_fsr4_known) fsr4_refresh();
             if (TabCtrl_GetCurSel(g_tabs) == PG_CONTROLS && !g_ctl_loaded) controls_refresh();
+            if (TabCtrl_GetCurSel(g_tabs) == PG_ONLINE) bridge_load();
             if (TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
             if (TabCtrl_GetCurSel(g_tabs) == PG_TROPHIES &&
                 (!g_trophy_n || GetTickCount() - g_trophy_tick > 5000))
@@ -2516,6 +2886,9 @@ static void build_ui(void) {
             build_trophies_page(g_pages[i]);
         } else if (i == PG_CONTROLS) {
             build_controls_page(g_pages[i]);
+        } else if (i == PG_ONLINE) {
+            build_page(i, 8);
+            build_online_extras(g_pages[i]);
         } else {
             build_page(i, 8);
         }
@@ -2594,6 +2967,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
                            rc.bottom - rc.top, NULL, NULL, inst, NULL);
     build_ui();
     load_fields();
+    online_apply_pool();
     lists_refresh();
     snapshot(g_snapshot, sizeof(g_snapshot));
     /* --page=N (0-based) opens on that tab. */
@@ -2606,6 +2980,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             if (sel == PG_LOG) log_reload(0);
             if (sel == PG_GRAPHICS) fsr4_refresh();
             if (sel == PG_CONTROLS) controls_refresh();
+            if (sel == PG_ONLINE) bridge_load();
             if (sel == PG_TROPHIES) trophies_refresh();
         }
     }
