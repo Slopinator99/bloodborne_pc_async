@@ -20,6 +20,7 @@
 #include "bb-settings.h"
 #include "bb-update.h"
 #include "bb-keys.h"
+#include "bb-shell.h"
 
 #define ID_SAVE 113
 #define ID_CLOSE 114
@@ -68,6 +69,9 @@
 #define ID_MOUSE_OFFSET 5507
 #define ID_MOUSE_SPEED_VAL 5508
 #define ID_MOUSE_OFFSET_VAL 5509
+#define ID_SHORTCUT 5600
+#define ID_STEAM 5601
+#define ID_PORT_FOLDER 5602
 #define WM_FSR4_DONE (WM_APP + 6)       /* wParam: 1 when all arrived; lParam: malloc'd message or NULL */
 
 /* This build, and where newer ones come from: the releases of the fork. The tag's numbers are
@@ -899,8 +903,8 @@ static void json_string_array(const char* text, const char* key, StrList* out) {
     }
 }
 
-/* Runs cmd with its output captured, up to 20 s. Returns 1 when it exited with 0. */
-static int run_capture(char* cmd, char* out, size_t n) {
+/* Runs cmd with its output captured, up to timeout_ms. Returns 1 when it exited with 0. */
+static int run_capture_ms(char* cmd, char* out, size_t n, DWORD timeout_ms) {
     SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa), .bInheritHandle = TRUE};
     HANDLE rd, wr;
     out[0] = 0;
@@ -933,7 +937,7 @@ static int run_capture(char* cmd, char* out, size_t n) {
             }
             break;
         }
-        if (GetTickCount() - start > 20000) {
+        if (GetTickCount() - start > timeout_ms) {
             TerminateProcess(pi.hProcess, 1);
             break;
         }
@@ -945,6 +949,10 @@ static int run_capture(char* cmd, char* out, size_t n) {
     CloseHandle(pi.hProcess);
     CloseHandle(rd);
     return code == 0;
+}
+
+static int run_capture(char* cmd, char* out, size_t n) {
+    return run_capture_ms(cmd, out, n, 20000);
 }
 
 /* The command running scripts/<script_name> (launcher_lists.py, launcher_trophies.py): through the frozen runtime when there is one
@@ -1813,6 +1821,81 @@ static void build_controls_page(HWND page) {
     w_label(page, ID_MOUSE_OFFSET_VAL, "0.13", 350, y + 88, 36);
 }
 
+/* --- Advanced: desktop shortcut, Steam library, port folder --- */
+static void on_shortcut(void) {
+    char desktop[MAX_PATH], lnk[MAX_PATH + 16], exe[MAX_PATH];
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    if (!desktop_folder(desktop, sizeof(desktop))) {
+        MessageBoxA(g_main, "The desktop folder was not found.", "Bloodborne", MB_OK | MB_ICONERROR);
+        return;
+    }
+    snprintf(lnk, sizeof(lnk), "%s\\Bloodborne.lnk", desktop);
+    if (make_shortcut(lnk, exe, g_root, "Bloodborne")) {
+        MessageBoxA(g_main, "Shortcut created on the desktop.", "Bloodborne", MB_OK | MB_ICONINFORMATION);
+    } else {
+        MessageBoxA(g_main, "The shortcut could not be created.", "Bloodborne", MB_OK | MB_ICONERROR);
+    }
+}
+
+/* The program Steam starts: "Play Bloodborne.exe" of the package, which runs the game with the
+ * saved settings and no window. */
+static int play_exe(char* out, size_t n) {
+    char exedir[MAX_PATH];
+    GetModuleFileNameA(NULL, exedir, sizeof(exedir));
+    *strrchr(exedir, '\\') = 0;
+    const char* dirs[] = {g_root, exedir};
+    const char* names[] = {"Play Bloodborne.exe", "bb-play.exe"};
+    for (int d = 0; d < 2; ++d)
+        for (int i = 0; i < 2; ++i) {
+            snprintf(out, n, "%s\\%s", dirs[d], names[i]);
+            if (GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES) return 1;
+        }
+    return 0;
+}
+
+static void on_steam(void) {
+    char exe[MAX_PATH], args[3 * MAX_PATH], cmd[4 * MAX_PATH];
+    static char out[4096];
+    if (!play_exe(exe, sizeof(exe))) {
+        MessageBoxA(g_main, "Play Bloodborne.exe was not found next to the launcher.", "Bloodborne", MB_OK | MB_ICONERROR);
+        return;
+    }
+    status("Looking for Steam...");
+    helper_command("launcher_steam.py", "status", cmd, sizeof(cmd));
+    if (!run_capture(cmd, out, sizeof(out))) {
+        MessageBoxA(g_main, "Steam could not be checked (no runtime or Python found?).", "Bloodborne", MB_OK | MB_ICONERROR);
+        return;
+    }
+    int accounts = 0, running = 0;
+    for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
+        if (!strncmp(line, "accounts\t", 9)) accounts = atoi(line + 9);
+        if (!strncmp(line, "running\t", 8)) running = atoi(line + 8);
+    }
+    if (!accounts) {
+        MessageBoxA(g_main, "Steam was not found on this PC (or nobody has signed in to it yet).", "Bloodborne",
+                    MB_OK | MB_ICONERROR);
+        status("Steam was not found.");
+        return;
+    }
+    if (running && MessageBoxA(g_main, "Steam has to close while the game is added; it starts again afterwards. Close Steam now?",
+                               "Bloodborne", MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return;
+    if (!save_fields()) return; /* Play Bloodborne.exe starts the game with the saved settings */
+    snprintf(args, sizeof(args), "add Bloodborne \"%s\" \"%s\" \"%s\"%s", exe, g_root, exe, running ? " --close-steam" : "");
+    helper_command("launcher_steam.py", args, cmd, sizeof(cmd));
+    status("Adding Bloodborne to Steam...");
+    if (run_capture_ms(cmd, out, sizeof(out), 90000)) {
+        MessageBoxA(g_main, "Bloodborne is in your Steam library. It starts with the settings saved in this launcher.",
+                    "Bloodborne", MB_OK | MB_ICONINFORMATION);
+        status("Bloodborne was added to Steam.");
+    } else {
+        char msg[4200];
+        snprintf(msg, sizeof(msg), "Could not add the game to Steam:\n\n%s", out);
+        MessageBoxA(g_main, msg, "Bloodborne", MB_OK | MB_ICONERROR);
+        status("Could not add the game to Steam.");
+    }
+}
+
 /* --- Trophies tab: the unlocks the game made, with the trophy list of the Python launcher ---
  * scripts/launcher_trophies.py prints one line per trophy (id, set, grade, name, description,
  * unlock time); the list is the launcher's own bbport_trophies.py, not a copy. */
@@ -2246,6 +2329,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             ShellExecuteA(g_main, "open", g_release.page_url[0] ? g_release.page_url : BB_RELEASES_PAGE, NULL, NULL,
                           SW_SHOWNORMAL);
         else if (id == ID_UPDATE_CHECK) update_check(1);
+        else if (id == ID_SHORTCUT) on_shortcut();
+        else if (id == ID_STEAM) on_steam();
+        else if (id == ID_PORT_FOLDER) ShellExecuteA(g_main, "open", g_root, NULL, NULL, SW_SHOWNORMAL);
         else if (id == ID_FSR4_DOWNLOAD) on_fsr4_download();
         else if (id == ID_CTL_SET) on_ctl_set();
         else if (id == ID_CTL_CLEAR) on_ctl_clear();
@@ -2421,6 +2507,9 @@ static void build_ui(void) {
             snprintf(ver, sizeof(ver), "Version %s", BB_VERSION);
             w_label(g_pages[i], 0, ver, 10, end + 14, 120);
             w_button(g_pages[i], ID_UPDATE_CHECK, "Check for updates now", 130, end + 8, 150, 23);
+            w_button(g_pages[i], ID_SHORTCUT, "Desktop shortcut", 10, end + 40, 120, 23);
+            w_button(g_pages[i], ID_STEAM, "Add to Steam", 136, end + 40, 100, 23);
+            w_button(g_pages[i], ID_PORT_FOLDER, "Port folder", 242, end + 40, 90, 23);
         } else if (i == PG_LOG) {
             build_log_page(g_pages[i]);
         } else if (i == PG_TROPHIES) {

@@ -289,7 +289,7 @@ if (WIN32)
     # plain Win32 with visual styles, no frameworks. Links only system libraries.
     add_executable(bb-launcher WIN32 ../packaging/windows/bb-launcher.c
         ../packaging/windows/bb-launcher.rc)
-    target_link_libraries(bb-launcher PRIVATE shell32 ole32 comctl32 winhttp)
+    target_link_libraries(bb-launcher PRIVATE shell32 ole32 comctl32 winhttp uuid)
 endif()
 
 # Explicit test targets; neither launches the game nor needs a Vulkan device.
