@@ -72,6 +72,7 @@
 #define ID_SHORTCUT 5600
 #define ID_STEAM 5601
 #define ID_PORT_FOLDER 5602
+#define ID_CLEAR_CACHE 5603
 #define ID_OL_ACCOUNT 5700
 #define ID_OL_SIGNIN 5701
 #define ID_OL_SIGNMSG 5702
@@ -284,6 +285,7 @@ static Field g_fields[] = {
     FLD_COMBO(PG_ADV, ST_APP, "readbacks", "launcher_readbacks", "GPU readbacks:", kReadbackV, kReadbackL, ""),
     FLD_CHECK(PG_ADV, ST_APP, "async_pipelines", "launcher_async", "Async pipeline compilation (experimental)", "0"),
     FLD_CHECK(PG_ADV, ST_APP, "frame_stats", "launcher_stats", "Frame statistics + GPU profile in the log", "1"),
+    FLD_CHECK(PG_ADV, ST_APP, "close_on_play", "", "Close the launcher when the game starts", "0"),
     FLD_CHECK(PG_ADV, ST_APP, "check_updates", "", "Check for updates when the launcher starts", "1"),
     FLD_CHECK(PG_ADV, ST_APP, "vk_validation", "", "Vulkan validation layers (slow)", "0"),
     FLD_TEXT(PG_ADV, ST_APP, "extra_env", "Extra environment:", ""),
@@ -831,6 +833,11 @@ static void on_run(void) {
     CloseHandle(pi.hThread);
     g_child = pi.hProcess;
     g_running = 1;
+    {
+        char close_it[8];
+        if (cfg_get_str("close_on_play", close_it, sizeof(close_it), "0") && !strcmp(close_it, "1"))
+            PostMessageA(g_main, WM_CLOSE, 0, 0); /* the game goes on without us */
+    }
     set_run_enabled(FALSE);
     status("Game starting silently (launcher-run.log)...");
     CloseHandle(CreateThread(NULL, 0, watch_thread, NULL, 0, NULL));
@@ -2221,6 +2228,24 @@ static void build_online_extras(HWND page) {
     SetWindowPos(result, NULL, S(10), S(ty + 30), S(PAGE_W - 24), S(44), SWP_NOZORDER);
 }
 
+/* --- Advanced: the shader cache --- */
+static void on_clear_cache(void) {
+    if (g_running) {
+        MessageBoxA(g_main, "Close the game first.", "Bloodborne", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    char saves[MAX_PATH], cache[MAX_PATH + 16];
+    online_saves(saves, sizeof(saves));
+    snprintf(cache, sizeof(cache), "%s\\cache", saves);
+    if (MessageBoxA(g_main,
+                    "Delete the shader and pipeline caches? The next start stutters for a few minutes while "
+                    "they are rebuilt.",
+                    "Bloodborne", MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return;
+    rmtree(cache);
+    status("Shader cache cleared.");
+}
+
 /* --- Trophies tab: the unlocks the game made, with the trophy list of the Python launcher ---
  * scripts/launcher_trophies.py prints one line per trophy (id, set, grade, name, description,
  * unlock time); the list is the launcher's own bbport_trophies.py, not a copy. */
@@ -2687,6 +2712,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_OL_COPY) on_online_copy_code();
         else if (id == ID_OL_TEST) on_online_test();
         else if (id == ID_SHORTCUT) on_shortcut();
+        else if (id == ID_CLEAR_CACHE) on_clear_cache();
         else if (id == ID_STEAM) on_steam();
         else if (id == ID_PORT_FOLDER) ShellExecuteA(g_main, "open", g_root, NULL, NULL, SW_SHOWNORMAL);
         else if (id == ID_FSR4_DOWNLOAD) on_fsr4_download();
@@ -2880,6 +2906,8 @@ static void build_ui(void) {
             w_button(g_pages[i], ID_SHORTCUT, "Desktop shortcut", 10, end + 40, 120, 23);
             w_button(g_pages[i], ID_STEAM, "Add to Steam", 136, end + 40, 100, 23);
             w_button(g_pages[i], ID_PORT_FOLDER, "Port folder", 242, end + 40, 90, 23);
+            w_button(g_pages[i], ID_CLEAR_CACHE, "Clear shader cache", 10, end + 72, 120, 23);
+            w_label(g_pages[i], 0, "For a black screen at start.", 138, end + 77, 250);
         } else if (i == PG_LOG) {
             build_log_page(g_pages[i]);
         } else if (i == PG_TROPHIES) {

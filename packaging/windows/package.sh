@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Builds dist/bbport-windows/ (and dist/bbport-windows.zip): Bloodborne.exe (the launcher, frozen
-# with PyInstaller so players need no Python), bb-probe.exe with the MSYS2 CLANG64 DLLs it needs,
-# the preparation scripts and run.py. Run from an MSYS2 CLANG64 shell after `bash build.sh`.
+# Builds dist/bbport-windows/ (and dist/bbport-windows.zip): bb-launcher.exe (the native launcher),
+# bb-runtime.exe (the Python runtime behind it: run.py, the helper scripts and the updater, frozen
+# with PyInstaller so players need no Python; entry point launcher/bb_runtime.py), Play
+# Bloodborne.exe, bb-probe.exe with the MSYS2 CLANG64 DLLs it needs, the preparation scripts and
+# run.py. Run from an MSYS2 CLANG64 shell after `bash build.sh`.
 # Freezing uses a Windows Python 3.10+ (python.org; WINPYTHON overrides) and a private venv with
-# PyInstaller and PySide6 Essentials. FSR 4 assets are included when present.
+# PyInstaller. No Qt: the Qt launcher of the upstream fork is not part of this package.
+# FSR 4 assets are included when present.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 source ./msys2-env.sh
@@ -31,59 +34,27 @@ venv=${BB_LAUNCHER_VENV:-out/qt-venv}
 if [[ ! -x $venv/Scripts/python.exe ]]; then
     "$python" -m venv "$venv"
 fi
-# Qt Quick uses real translucent surfaces over full-window artwork. Pillow remains for the
-# classic Tk fallback. Essentials avoids the unrelated, very large Qt Addons wheel.
-"$venv/Scripts/python.exe" -m pip install -q --disable-pip-version-check pyinstaller pillow certifi PySide6_Essentials==6.12.0
-# The scripts run inside Bloodborne.exe (--script): the standard modules they import come along.
+"$venv/Scripts/python.exe" -m pip install -q --disable-pip-version-check pyinstaller certifi
+# The scripts run inside bb-runtime.exe (--script): the standard modules they import come along.
 hidden=()
-for module in argparse base64 bisect collections contextlib hashlib json re shutil struct tempfile               xml.etree.ElementTree urllib.request ctypes.wintypes certifi; do
+for module in argparse base64 bisect collections contextlib hashlib json re shutil struct tempfile \
+              xml.etree.ElementTree urllib.request ctypes.wintypes certifi; do
     hidden+=(--hidden-import "$module")
 done
 "$venv/Scripts/python.exe" -m PyInstaller --noconfirm --clean --log-level WARN --windowed \
-    --name Bloodborne --icon "$(cygpath -w "$PWD/launcher/assets/hunter-icon.ico")" --distpath out/pyi-dist \
-    --workpath out/pyi-work --specpath out/pyi-work --paths "$(cygpath -w "$PWD/scripts")" "${hidden[@]}" \
-    "$(cygpath -w "$PWD/launcher/bbport_launcher_win.py")"
-# Qt Quick needs the VC runtime shipped with the PySide6 wheel. PyInstaller can pick an older
-# root copy from Windows Python. It can also collect an unrelated ICU from the build host's PATH;
-# that DLL shadows Windows' ICU and prevents Qt6Core from loading in the packaged launcher.
-pyi_internal=out/pyi-dist/Bloodborne/_internal
-for dll in VCRUNTIME140.dll VCRUNTIME140_1.dll; do
-    cp "$pyi_internal/PySide6/$dll" "$pyi_internal/$dll"
-done
-rm -f "$pyi_internal/icuuc.dll" "$pyi_internal/icudt78.dll"
-
+    --name bb-runtime --icon "$(cygpath -w "$PWD/launcher/bloodborne.ico")" --distpath out/pyi-dist \
+    --workpath out/pyi-work --specpath out/pyi-work --paths "$(cygpath -w "$PWD/scripts")" \
+    --paths "$(cygpath -w "$PWD/launcher")" "${hidden[@]}" \
+    "$(cygpath -w "$PWD/launcher/bb_runtime.py")"
 # The package is assembled in a fresh staging folder and zipped from there; dist/bbport-windows
 # (a playable copy that may hold saves and settings) is only refreshed afterwards.
 dest=out/stage/bbport-windows
 rm -rf -- out/stage
 mkdir -p "$dest/bin" "$dest/launcher"
-cp -r out/pyi-dist/Bloodborne/. "$dest/"
+cp -r out/pyi-dist/bb-runtime/. "$dest/"
 llvm-strip -o "$dest/Play Bloodborne.exe" out/bb-play.exe
 llvm-strip -o "$dest/bb-launcher.exe" out/bb-launcher.exe
 cp launcher/bloodborne.ico launcher/bloodborne.png "$dest/launcher/"
-cp -r launcher/art "$dest/launcher/"
-cp -r launcher/qml "$dest/launcher/"
-mkdir -p "$dest/launcher/assets"
-cp launcher/assets/hunter-icon.ico launcher/assets/hunter-icon.png "$dest/launcher/assets/"
-cp -r launcher/assets/ui "$dest/launcher/assets/"
-# ShadPs4Plus PKG Extractor 1.1 handles the user's own base and update PKGs from the
-# launcher's Game page. Pin the upstream binary so release builds stay reproducible.
-pkg_archive=out/vendor/ShadPs4Plus-PkgExtractor-1.1-windows.zip
-pkg_url=https://github.com/AzaharPlus/shadPS4Plus/releases/download/PKG_EXTRACTOR_1_1/ShadPs4Plus-PkgExtractor-1.1-windows.zip
-mkdir -p out/vendor
-if [[ ! -f $pkg_archive ]]; then curl -fL --retry 3 "$pkg_url" -o "$pkg_archive"; fi
-printf '%s  %s\n' 'a6a6dee84c1283949245c868e580ff8d0049d0e73df9de3096460ee26c6f04d7' "$pkg_archive" | sha256sum -c -
-"$venv/Scripts/python.exe" - "$pkg_archive" "$dest/tools/pkg-extractor" <<'PY'
-from pathlib import Path
-import sys, zipfile
-
-archive, destination = Path(sys.argv[1]), Path(sys.argv[2])
-destination.mkdir(parents=True, exist_ok=True)
-prefix = 'ShadPs4Plus-PkgExtractor-1.1-windows/'
-with zipfile.ZipFile(archive) as source:
-    for name in ('pkg_extractor.exe', 'libc++.dll', 'zlib1.dll'):
-        (destination / name).write_bytes(source.read(prefix + name))
-PY
 # The executables without debug information (out/ keeps the symbols for crash reports).
 for exe in bb-probe.exe bb-gpu-capabilities.exe; do
     llvm-strip --strip-debug -o "$dest/bin/$exe" "out/$exe"
@@ -196,7 +167,7 @@ if [[ ${running:-0} != 0 ]]; then
 else
     mkdir -p "$play"
     find "$play" -mindepth 1 -maxdepth 1 ! -name user ! -name mods ! -name bbport.ini \
-        ! -name mods.json ! -name patches.json -exec rm -rf {} +
+        ! -name input.ini ! -name mods.json ! -name patches.json ! -name last_run.log -exec rm -rf {} +
     cp -r "$dest/." "$play/"
 fi
 du -sh "$dest" dist/bbport-windows.zip
