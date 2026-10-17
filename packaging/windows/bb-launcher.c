@@ -19,6 +19,7 @@
 
 #include "bb-settings.h"
 #include "bb-update.h"
+#include "bb-keys.h"
 
 #define ID_SAVE 113
 #define ID_CLOSE 114
@@ -57,6 +58,16 @@
 #define ID_FSR4_BAR 5401
 #define ID_FSR4_DOWNLOAD 5402
 #define WM_FSR4_PROGRESS (WM_APP + 5)   /* wParam: files done, lParam: files in all */
+#define ID_CTL_LIST 5500
+#define ID_CTL_SET 5501
+#define ID_CTL_CLEAR 5502
+#define ID_MOUSE_ON 5503
+#define ID_MOUSE_RIGHT 5504
+#define ID_MOUSE_LEFT 5505
+#define ID_MOUSE_SPEED 5506
+#define ID_MOUSE_OFFSET 5507
+#define ID_MOUSE_SPEED_VAL 5508
+#define ID_MOUSE_OFFSET_VAL 5509
 #define WM_FSR4_DONE (WM_APP + 6)       /* wParam: 1 when all arrived; lParam: malloc'd message or NULL */
 
 /* This build, and where newer ones come from: the releases of the fork. The tag's numbers are
@@ -129,9 +140,10 @@ static const char* kReadbackL[] = {"Relaxed (default)", "Off", "Precise"};
 /* --- the field table --- */
 enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER, K_LIST };
 enum { ST_INI, ST_APP };
-enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_MODS, PG_TROPHIES, PG_ADV, PG_LOG, PG_COUNT };
+enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_MODS, PG_TROPHIES, PG_CONTROLS, PG_ADV, PG_LOG,
+       PG_COUNT };
 static const char* kPageNames[PG_COUNT] = {"Play", "Graphics", "Display", "Game",
-                                           "Cheats", "Mods", "Trophies", "Advanced", "Log"};
+                                           "Cheats", "Mods", "Trophies", "Controls", "Advanced", "Log"};
 
 typedef struct {
     int page, kind, store;
@@ -483,6 +495,8 @@ static void load_fields(void) {
  * save: with no Save button on most tabs, closing asks before dropping changes. */
 static void lists_state(char* out, size_t n);
 static void lists_save(void);
+static void controls_state(char* out, size_t n);
+static int controls_save(void);
 
 static char g_snapshot[32768];
 
@@ -498,6 +512,8 @@ static void snapshot(char* out, size_t n) {
     }
     size_t used = strlen(out);
     if (used + 8 < n) lists_state(out + used, n - used);
+    used = strlen(out);
+    if (used + 8 < n) controls_state(out + used, n - used);
 }
 
 static int save_fields(void) {
@@ -541,6 +557,7 @@ static int save_fields(void) {
         return 0;
     }
     lists_save();
+    if (!controls_save()) return 0;
     snapshot(g_snapshot, sizeof(g_snapshot));
     return 1;
 }
@@ -1489,6 +1506,313 @@ static void build_fsr4_group(HWND page, int y) {
     EnableWindow(button, FALSE);
 }
 
+/* --- Controls tab: keyboard and mouse-button bindings and mouse look ---
+ * input.ini is read and written by scripts/launcher_input.py (the Python launcher's own rules,
+ * launcher/bbport_input_config.py); only the first binding of an action is edited, the controller
+ * lines and any further bindings stay as they are. bb-keys.h turns a pressed key into the name
+ * the game accepts. Edits are written with the rest of the settings (Save, Play). */
+#define CTL_MAX 32
+typedef struct {
+    char output[32], label[48], name[24];
+    int stick;
+} Action;
+static Action g_actions[CTL_MAX];
+static int g_action_n, g_ctl_loaded, g_ctl_edited, g_mouse_edited;
+static char g_reserved[256];
+static int g_mouse_on, g_mouse_right = 1;
+static double g_mouse_speed = 1.0, g_mouse_offset = 0.125;
+
+static void ctl_ini(char* out, size_t n) {
+    snprintf(out, n, "%s\\input.ini", g_root);
+}
+
+static int is_reserved(const char* name) {
+    char list[256], *tok, *save = NULL;
+    snprintf(list, sizeof(list), "%s", g_reserved);
+    for (tok = strtok_s(list, ",", &save); tok; tok = strtok_s(NULL, ",", &save))
+        if (!strcmp(tok, name)) return 1;
+    return 0;
+}
+
+static void ctl_show_row(HWND lv, int row) {
+    ListView_SetItemText(lv, row, 1, g_actions[row].name[0] ? g_actions[row].name : "(none)");
+}
+
+static void ctl_show_mouse(void) {
+    HWND page = g_pages[PG_CONTROLS];
+    SendMessageA(GetDlgItem(page, ID_MOUSE_ON), BM_SETCHECK, g_mouse_on ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageA(GetDlgItem(page, ID_MOUSE_RIGHT), BM_SETCHECK, g_mouse_right ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageA(GetDlgItem(page, ID_MOUSE_LEFT), BM_SETCHECK, g_mouse_right ? BST_UNCHECKED : BST_CHECKED, 0);
+    int sp = (int)((g_mouse_speed - 0.1) / 0.1 + 0.5), off = (int)(g_mouse_offset / 0.05 + 0.5);
+    SendMessageA(GetDlgItem(page, ID_MOUSE_SPEED), TBM_SETPOS, TRUE, sp < 0 ? 0 : sp > 49 ? 49 : sp);
+    SendMessageA(GetDlgItem(page, ID_MOUSE_OFFSET), TBM_SETPOS, TRUE, off < 0 ? 0 : off > 20 ? 20 : off);
+    char v[16];
+    snprintf(v, sizeof(v), "%.2f", g_mouse_speed);
+    SetWindowTextA(GetDlgItem(page, ID_MOUSE_SPEED_VAL), v);
+    snprintf(v, sizeof(v), "%.3g", g_mouse_offset);
+    SetWindowTextA(GetDlgItem(page, ID_MOUSE_OFFSET_VAL), v);
+}
+
+static void ctl_read_mouse(void) {
+    HWND page = g_pages[PG_CONTROLS];
+    g_mouse_on = SendMessageA(GetDlgItem(page, ID_MOUSE_ON), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    g_mouse_right = SendMessageA(GetDlgItem(page, ID_MOUSE_RIGHT), BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+/* A slider was moved: its value replaces the stored one. */
+static void ctl_read_sliders(void) {
+    HWND page = g_pages[PG_CONTROLS];
+    g_mouse_speed = 0.1 + 0.1 * SendMessageA(GetDlgItem(page, ID_MOUSE_SPEED), TBM_GETPOS, 0, 0);
+    g_mouse_offset = 0.05 * SendMessageA(GetDlgItem(page, ID_MOUSE_OFFSET), TBM_GETPOS, 0, 0);
+}
+
+static void controls_refresh(void) {
+    char ini[MAX_PATH], args[MAX_PATH + 16], cmd[4 * MAX_PATH];
+    static char out[32768];
+    ctl_ini(ini, sizeof(ini));
+    snprintf(args, sizeof(args), "load \"%s\"", ini);
+    helper_command("launcher_input.py", args, cmd, sizeof(cmd));
+    if (!run_capture(cmd, out, sizeof(out))) {
+        status("Could not read input.ini (no runtime or Python found?).");
+        return;
+    }
+    g_action_n = 0;
+    HWND lv = GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST);
+    ListView_DeleteAllItems(lv);
+    for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
+        line[strcspn(line, "\r")] = 0;
+        char* f[6] = {0};
+        int n = 0;
+        for (char* q = line; n < 6;) {
+            f[n++] = q;
+            char* tab = strchr(q, '\t');
+            if (!tab) break;
+            *tab = 0;
+            q = tab + 1;
+        }
+        if (!strcmp(f[0], "action") && n >= 4 && g_action_n < CTL_MAX) {
+            Action* a = &g_actions[g_action_n];
+            memset(a, 0, sizeof(*a));
+            snprintf(a->output, sizeof(a->output), "%s", f[1]);
+            snprintf(a->label, sizeof(a->label), "%s", f[2]);
+            a->stick = !strcmp(f[3], "sticks");
+            LVITEMA it = {.mask = LVIF_TEXT, .iItem = g_action_n, .pszText = a->label};
+            SendMessageA(lv, LVM_INSERTITEMA, 0, (LPARAM)&it);
+            ++g_action_n;
+        } else if (!strcmp(f[0], "bind") && n >= 2) {
+            for (int i = 0; i < g_action_n; ++i)
+                if (!strcmp(g_actions[i].output, f[1])) snprintf(g_actions[i].name, sizeof(g_actions[i].name), "%s", n >= 3 ? f[2] : "");
+        } else if (!strcmp(f[0], "mouse") && n >= 5) {
+            g_mouse_on = f[1][0] == '1';
+            g_mouse_right = strcmp(f[2], "left") != 0;
+            g_mouse_speed = atof(f[3]);
+            g_mouse_offset = atof(f[4]);
+        } else if (!strcmp(f[0], "reserved") && n >= 2) {
+            snprintf(g_reserved, sizeof(g_reserved), "%s", f[1]);
+        }
+    }
+    for (int i = 0; i < g_action_n; ++i) ctl_show_row(lv, i);
+    ctl_show_mouse();
+    g_ctl_loaded = 1;
+    g_ctl_edited = g_mouse_edited = 0;
+}
+
+/* --- the capture window: waits for a key, a mouse button or a wheel turn --- */
+static const char* g_capture_result;
+static int g_capture_done, g_capture_stick;
+static char g_capture_name[24];
+
+static void capture_finish(const char* name) {
+    g_capture_result = name;
+    if (name) snprintf(g_capture_name, sizeof(g_capture_name), "%s", name);
+    g_capture_done = 1;
+}
+
+static void capture_offer(const char* name) {
+    if (!name) {
+        MessageBoxA(g_main, "That key has no bbport name; pick another one.", "Unsupported key", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (is_reserved(name)) {
+        char msg[200];
+        snprintf(msg, sizeof(msg), "%s is reserved (menu, recording, or a hotkey) and cannot be bound to a game action.", name);
+        MessageBoxA(g_main, msg, "Reserved", MB_OK | MB_ICONWARNING);
+        capture_finish(NULL);
+        return;
+    }
+    capture_finish(name);
+}
+
+static void capture_mouse(const char* name) {
+    if (g_capture_stick) {
+        MessageBoxA(g_main, "A stick direction can only be bound to a key, not a mouse button.", "Keyboard only",
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    capture_offer(name);
+}
+
+static LRESULT CALLBACK capture_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
+    switch (m) {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (wp == VK_ESCAPE) capture_finish(NULL);
+        else capture_offer(key_name((unsigned)wp, (unsigned)((lp >> 16) & 0xFF), (int)((lp >> 24) & 1)));
+        return 0;
+    case WM_LBUTTONDOWN: capture_mouse("leftbutton"); return 0;
+    case WM_RBUTTONDOWN: capture_mouse("rightbutton"); return 0;
+    case WM_MBUTTONDOWN: capture_mouse("middlebutton"); return 0;
+    case WM_XBUTTONDOWN:
+        capture_mouse(HIWORD(wp) == XBUTTON1 ? "sidebuttonback" : "sidebuttonforward");
+        return TRUE;
+    case WM_MOUSEWHEEL: capture_mouse((short)HIWORD(wp) > 0 ? "mousewheelup" : "mousewheeldown"); return 0;
+    case WM_MOUSEHWHEEL: capture_mouse((short)HIWORD(wp) > 0 ? "mousewheelright" : "mousewheelleft"); return 0;
+    case WM_CLOSE: capture_finish(NULL); return 0;
+    }
+    return DefWindowProcA(w, m, wp, lp);
+}
+
+/* Returns the chosen name, or NULL when cancelled. */
+static const char* capture_binding(const Action* a) {
+    static int registered;
+    HINSTANCE inst = GetModuleHandleA(NULL);
+    if (!registered) {
+        WNDCLASSA wc = {.lpfnWndProc = capture_proc, .hInstance = inst, .hCursor = LoadCursor(NULL, IDC_ARROW),
+                        .hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1), .lpszClassName = "BbCapture"};
+        RegisterClassA(&wc);
+        registered = 1;
+    }
+    RECT r;
+    GetWindowRect(g_main, &r);
+    int w = S(330), h = S(110);
+    HWND win = CreateWindowExA(WS_EX_DLGMODALFRAME, "BbCapture", "Set control", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                               r.left + ((r.right - r.left) - w) / 2, r.top + ((r.bottom - r.top) - h) / 2, w, h,
+                               g_main, NULL, inst, NULL);
+    char text[200];
+    snprintf(text, sizeof(text), a->stick ? "Press a key for \"%s\".\n\nEsc cancels."
+                                          : "Press a key or a mouse button, or turn the wheel, for \"%s\".\n\nEsc cancels.",
+             a->label);
+    HWND msg = CreateWindowA("STATIC", text, WS_CHILD | WS_VISIBLE | SS_CENTER, S(10), S(14), S(300), S(60), win,
+                             NULL, inst, NULL);
+    SendMessageA(msg, WM_SETFONT, (WPARAM)g_font, 1);
+    g_capture_done = 0;
+    g_capture_result = NULL;
+    g_capture_stick = a->stick;
+    EnableWindow(g_main, FALSE);
+    ShowWindow(win, SW_SHOW);
+    SetForegroundWindow(win);
+    SetFocus(win);
+    MSG m;
+    while (!g_capture_done && GetMessageA(&m, NULL, 0, 0)) {
+        TranslateMessage(&m);
+        DispatchMessageA(&m);
+    }
+    EnableWindow(g_main, TRUE);
+    DestroyWindow(win);
+    SetForegroundWindow(g_main);
+    return g_capture_result ? g_capture_name : NULL;
+}
+
+static void on_ctl_set(void) {
+    HWND lv = GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST);
+    int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
+    if (row < 0 || row >= g_action_n) {
+        status("Pick an action in the list first.");
+        return;
+    }
+    const char* name = capture_binding(&g_actions[row]);
+    if (!name) return;
+    snprintf(g_actions[row].name, sizeof(g_actions[row].name), "%s", name);
+    g_ctl_edited = 1;
+    ctl_show_row(lv, row);
+}
+
+static void on_ctl_clear(void) {
+    HWND lv = GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST);
+    int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
+    if (row < 0 || row >= g_action_n) return;
+    g_actions[row].name[0] = 0;
+    g_ctl_edited = 1;
+    ctl_show_row(lv, row);
+}
+
+/* What the page holds, for the unsaved-changes check. */
+static void controls_state(char* out, size_t n) {
+    out[0] = 0;
+    if (!g_ctl_loaded) return;
+    ctl_read_mouse();
+    size_t used = 0;
+    for (int i = 0; i < g_action_n && used + 40 < n; ++i)
+        used += (size_t)snprintf(out + used, n - used, "%s=%s;", g_actions[i].output, g_actions[i].name);
+    if (used + 40 < n) snprintf(out + used, n - used, "mouse=%d,%d,%.2f,%.2f", g_mouse_on, g_mouse_right, g_mouse_speed, g_mouse_offset);
+}
+
+/* Writes the edited bindings and mouse look to input.ini. Returns 1 when there was nothing to do
+ * or it worked. */
+static int controls_save(void) {
+    if (!g_ctl_loaded) return 1;
+    ctl_read_mouse();
+    if (!g_ctl_edited && !g_mouse_edited) return 1;
+    char ini[MAX_PATH], args[4096], cmd[8192];
+    static char out[4096];
+    ctl_ini(ini, sizeof(ini));
+    int used = snprintf(args, sizeof(args), "save \"%s\"", ini);
+    if (g_ctl_edited)
+        for (int i = 0; i < g_action_n; ++i)
+            used += snprintf(args + used, sizeof(args) - (size_t)used, " %s=%s", g_actions[i].output, g_actions[i].name);
+    if (g_mouse_edited)
+        snprintf(args + used, sizeof(args) - (size_t)used, " --mouse %d,%s,%.3f,%.3f", g_mouse_on,
+                 g_mouse_right ? "right" : "left", g_mouse_speed, g_mouse_offset);
+    helper_command("launcher_input.py", args, cmd, sizeof(cmd));
+    if (!run_capture(cmd, out, sizeof(out))) {
+        char msg[4200];
+        snprintf(msg, sizeof(msg), "Could not save the controls:\n\n%s", out);
+        MessageBoxA(g_main, msg, "Bloodborne", MB_OK | MB_ICONERROR);
+        return 0;
+    }
+    g_ctl_edited = g_mouse_edited = 0;
+    return 1;
+}
+
+static void build_controls_page(HWND page) {
+    HWND lv = CreateWindowExA(WS_EX_CLIENTEDGE, WC_LISTVIEWA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT |
+                              LVS_SINGLESEL | LVS_SHOWSELALWAYS, S(6), S(8), S(PAGE_W - 12), S(148), page,
+                              (HMENU)(INT_PTR)ID_CTL_LIST, NULL, NULL);
+    SendMessageA(lv, WM_SETFONT, (WPARAM)g_font, 1);
+    ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
+    static const char* heads[] = {"Action", "Key or button"};
+    static const int widths[] = {190, 160};
+    for (int i = 0; i < 2; ++i) {
+        LVCOLUMNA col = {.mask = LVCF_TEXT | LVCF_WIDTH, .pszText = (char*)heads[i], .cx = S(widths[i])};
+        SendMessageA(lv, LVM_INSERTCOLUMNA, (WPARAM)i, (LPARAM)&col);
+    }
+    w_button(page, ID_CTL_SET, "Set...", 6, 162, 80, 23);
+    w_button(page, ID_CTL_CLEAR, "Clear", 92, 162, 80, 23);
+    w_label(page, 0, "Select an action, then Set...", 182, 167, 210);
+
+    int y = 192;
+    HWND group = CreateWindowA("BUTTON", "Mouse look", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, S(6), S(y),
+                               S(PAGE_W - 12), S(112), page, NULL, NULL, NULL);
+    SendMessageA(group, WM_SETFONT, (WPARAM)g_font, 1);
+    w_check(page, ID_MOUSE_ON, "Enable mouse look (F7 toggles it in the game)", 14, y + 16, 360);
+    HWND right = CreateWindowA("BUTTON", "Camera (right stick)", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON | WS_GROUP,
+                               S(14), S(y + 36), S(170), S(16), page, (HMENU)(INT_PTR)ID_MOUSE_RIGHT, NULL, NULL);
+    HWND left = CreateWindowA("BUTTON", "Movement (left stick)", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, S(190),
+                              S(y + 36), S(180), S(16), page, (HMENU)(INT_PTR)ID_MOUSE_LEFT, NULL, NULL);
+    SendMessageA(right, WM_SETFONT, (WPARAM)g_font, 1);
+    SendMessageA(left, WM_SETFONT, (WPARAM)g_font, 1);
+    w_label(page, 0, "Sensitivity:", 14, y + 62, 100);
+    HWND sp = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, S(124),
+                            S(y + 58), S(220), S(22), page, (HMENU)(INT_PTR)ID_MOUSE_SPEED, NULL, NULL);
+    SendMessageA(sp, TBM_SETRANGE, TRUE, MAKELPARAM(0, 49));
+    w_label(page, ID_MOUSE_SPEED_VAL, "1.00", 350, y + 62, 36);
+    w_label(page, 0, "Minimum turn speed:", 14, y + 88, 110);
+    HWND off = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, S(124),
+                             S(y + 84), S(220), S(22), page, (HMENU)(INT_PTR)ID_MOUSE_OFFSET, NULL, NULL);
+    SendMessageA(off, TBM_SETRANGE, TRUE, MAKELPARAM(0, 20));
+    w_label(page, ID_MOUSE_OFFSET_VAL, "0.13", 350, y + 88, 36);
+}
+
 /* --- Trophies tab: the unlocks the game made, with the trophy list of the Python launcher ---
  * scripts/launcher_trophies.py prints one line per trophy (id, set, grade, name, description,
  * unlock time); the list is the launcher's own bbport_trophies.py, not a copy. */
@@ -1923,6 +2247,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                           SW_SHOWNORMAL);
         else if (id == ID_UPDATE_CHECK) update_check(1);
         else if (id == ID_FSR4_DOWNLOAD) on_fsr4_download();
+        else if (id == ID_CTL_SET) on_ctl_set();
+        else if (id == ID_CTL_CLEAR) on_ctl_clear();
+        else if (id == ID_MOUSE_ON || id == ID_MOUSE_RIGHT || id == ID_MOUSE_LEFT) g_mouse_edited = 1;
         else if (id == ID_TROPHY_REFRESH) trophies_refresh();
         else if (id == ID_TROPHY_FILTER && HIWORD(wp) == CBN_SELCHANGE) trophies_fill();
         else if (id == ID_LOG_COPY) log_copy();
@@ -1986,6 +2313,17 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if (wp == LOG_TIMER && w == g_main && TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
         break;
     case WM_HSCROLL: {
+        if ((HWND)lp == GetDlgItem(g_pages[PG_CONTROLS], ID_MOUSE_SPEED) ||
+            (HWND)lp == GetDlgItem(g_pages[PG_CONTROLS], ID_MOUSE_OFFSET)) {
+            ctl_read_sliders();
+            char v[16];
+            snprintf(v, sizeof(v), "%.2f", g_mouse_speed);
+            SetWindowTextA(GetDlgItem(g_pages[PG_CONTROLS], ID_MOUSE_SPEED_VAL), v);
+            snprintf(v, sizeof(v), "%.2f", g_mouse_offset);
+            SetWindowTextA(GetDlgItem(g_pages[PG_CONTROLS], ID_MOUSE_OFFSET_VAL), v);
+            g_mouse_edited = 1;
+            break;
+        }
         for (int i = 0; i < NFIELDS; ++i) {
             if (g_fields[i].kind == K_SLIDER && g_fields[i].hwnd == (HWND)lp) {
                 char v[16];
@@ -1997,6 +2335,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_NOTIFY: {
         NMHDR* n = (NMHDR*)lp;
+        if (n->idFrom == ID_CTL_LIST && n->code == NM_DBLCLK) on_ctl_set();
         if (n->idFrom == ID_TROPHY_LIST && n->code == LVN_ITEMCHANGED) {
             const NMLISTVIEW* nm = (const NMLISTVIEW*)lp;
             if ((nm->uNewState & LVIS_SELECTED) && !(nm->uOldState & LVIS_SELECTED)) {
@@ -2013,6 +2352,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if (n->idFrom == ID_TABS && n->code == TCN_SELCHANGE) {
             show_page(TabCtrl_GetCurSel(g_tabs));
             if (TabCtrl_GetCurSel(g_tabs) == PG_GRAPHICS && !g_fsr4_known) fsr4_refresh();
+            if (TabCtrl_GetCurSel(g_tabs) == PG_CONTROLS && !g_ctl_loaded) controls_refresh();
             if (TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
             if (TabCtrl_GetCurSel(g_tabs) == PG_TROPHIES &&
                 (!g_trophy_n || GetTickCount() - g_trophy_tick > 5000))
@@ -2085,6 +2425,8 @@ static void build_ui(void) {
             build_log_page(g_pages[i]);
         } else if (i == PG_TROPHIES) {
             build_trophies_page(g_pages[i]);
+        } else if (i == PG_CONTROLS) {
+            build_controls_page(g_pages[i]);
         } else {
             build_page(i, 8);
         }
@@ -2174,6 +2516,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             show_page(sel);
             if (sel == PG_LOG) log_reload(0);
             if (sel == PG_GRAPHICS) fsr4_refresh();
+            if (sel == PG_CONTROLS) controls_refresh();
             if (sel == PG_TROPHIES) trophies_refresh();
         }
     }
