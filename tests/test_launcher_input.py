@@ -1,14 +1,15 @@
-"""scripts/launcher_input.py: input.ini for the native launcher's Controls tab."""
+"""scripts/launcher_input.py: the key_<action> bindings of bbport.ini for the native Controls tab."""
 from paths import ROOT
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 
 SCRIPT = ROOT / 'scripts' / 'launcher_input.py'
-sys.path.insert(0, str(ROOT / 'launcher'))
-import bbport_input_config as cfg  # noqa: E402
+sys.path.insert(0, str(ROOT / 'scripts'))
+import launcher_input  # noqa: E402
 
 
 def run(*args):
@@ -21,28 +22,50 @@ def rows(text):
     return [line.split('\t') for line in text.splitlines()]
 
 
+class TableTests(unittest.TestCase):
+    def test_the_action_table_is_the_games(self):
+        """src/input_bindings.c is authoritative: same actions, order, labels and defaults."""
+        source = (ROOT / 'src' / 'input_bindings.c').read_text(encoding='utf-8')
+        body = source[source.index('static const BindInfo INFO'):]
+        body = body[:body.index('};')]
+        game = re.findall(r'\{"(\w+)", "([^"]+)", \w+, (NULL|"[^"]+"), (\d)\}', body)
+        self.assertEqual(len(game), 29)
+        expected = [(name, label, '' if key == 'NULL' else key.strip('"'), '' if mouse == '0' else f'Mouse{mouse}')
+                    for name, label, key, mouse in game]
+        self.assertEqual(launcher_input.ACTIONS, expected)
+
+    def test_mouse_inputs_are_the_games(self):
+        source = (ROOT / 'src' / 'input_bindings.c').read_text(encoding='utf-8')
+        names = re.search(r'MOUSE_NAMES\[\] = \{NULL, ([^}]+)\}', source).group(1)
+        game = [n.strip().strip('"') for n in names.split(',')]
+        self.assertEqual([m.lower() for m in launcher_input.MOUSE_INPUTS], game)
+
+
 class LoadTests(unittest.TestCase):
-    def test_a_missing_file_loads_the_shipped_defaults(self):
+    def test_defaults_without_a_file_or_lines(self):
         with tempfile.TemporaryDirectory() as directory:
-            code, out, err = run('load', Path(directory) / 'input.ini')
+            code, out, err = run('load', Path(directory) / 'bbport.ini')
             self.assertEqual(code, 0, err)
             table = rows(out)
-            binds = {r[1]: r[2] for r in table if r[0] == 'bind'}
-            self.assertEqual(binds['cross'], 'space')
-            self.assertEqual(binds['r3'], 'q')                       # the first of the two r3 lines
-            self.assertEqual(binds['axis_left_y_minus'], 'w')
-            actions = [r for r in table if r[0] == 'action']
-            self.assertEqual(len(actions), len(cfg.KEYBOARD_OUTPUTS))
-            self.assertEqual(actions[0][1:], ['cross', 'Cross', 'buttons'])
-            self.assertEqual(actions[-1][3], 'sticks')
-            mouse = [r for r in table if r[0] == 'mouse'][0]
-            self.assertEqual(mouse[1:3], ['0', 'right'])
-            self.assertEqual([r for r in table if r[0] == 'hotkeys'][0][1:], ['f7', 'f8'])
-            reserved = [r for r in table if r[0] == 'reserved'][0][1].split(',')
-            self.assertEqual(set(reserved), {'insert', 'f9', 'f7', 'f8'})
-            keys = [r for r in table if r[0] == 'keys'][0][1].split(',')
-            self.assertIn('space', keys)
-            self.assertIn('leftbutton', keys)
+            self.assertEqual(len([r for r in table if r[0] == 'action']), 29)
+            binds = {r[1]: (r[2], r[3]) for r in table if r[0] == 'bind'}
+            self.assertEqual(binds['interact'], ('E', ''))
+            self.assertEqual(binds['attack'], ('', 'Mouse1'))
+            self.assertEqual(binds['firearm'], ('X', 'Mouse2'))
+            self.assertEqual(binds['roll'], ('Space', ''))
+
+    def test_reads_lines_like_the_game(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ini = Path(directory) / 'bbport.ini'
+            ini.write_text('# comment\nupscaler=taa\nkey_interact = F\nkey_firearm=X, mouse2\nkey_gestures=none\n'
+                           'key_attack = Mouse3 , Left Ctrl\nkey_bogus=Q\nkey_roll=Z\nkey_roll=V\n', encoding='utf-8')
+            binds = {r[1]: (r[2], r[3]) for r in rows(run('load', ini)[1]) if r[0] == 'bind'}
+            self.assertEqual(binds['interact'], ('F', ''))
+            self.assertEqual(binds['firearm'], ('X', 'Mouse2'))
+            self.assertEqual(binds['gestures'], ('', ''))
+            self.assertEqual(binds['attack'], ('Left Ctrl', 'Mouse3'))     # either order
+            self.assertEqual(binds['roll'], ('V', ''))                      # the last line wins
+            self.assertNotIn('bogus', binds)
 
     def test_usage_error(self):
         self.assertEqual(run()[0], 2)
@@ -50,55 +73,44 @@ class LoadTests(unittest.TestCase):
 
 
 class SaveTests(unittest.TestCase):
-    def test_edits_replace_first_bindings_and_keep_everything_else(self):
+    def test_rewrites_in_place_appends_the_rest_and_keeps_every_other_line(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'input.ini'
-            path.write_text(cfg.DEFAULT_INPUT_INI, encoding='utf-8')
-            code, out, err = run('save', path, 'cross=x', 'circle=rightbutton', 'r3=', 'axis_left_x_plus=right')
-            self.assertEqual(code, 0, err)
-            text = path.read_text(encoding='utf-8')
-            self.assertIn('cross = x', text)
-            self.assertIn('circle = rightbutton', text)
-            self.assertIn('axis_left_x_plus = right', text)
-            self.assertNotIn('r3 = q', text)                      # cleared
-            self.assertIn('r3 = c', text)                         # the second binding is untouched
-            self.assertIn('cross = cross', text)                  # the controller line is untouched
-            self.assertIn('hotkey_toggle_mouse_to_joystick = f7', text)
-            self.assertIn('# Controller', text)                   # comments kept
-            # And the helper reads back what it wrote.
-            binds = {r[1]: r[2] for r in rows(run('load', path)[1]) if r[0] == 'bind'}
-            self.assertEqual((binds['cross'], binds['circle'], binds['axis_left_x_plus']), ('x', 'rightbutton', 'right'))
+            ini = Path(directory) / 'bbport.ini'
+            ini.write_text('# my settings\nupscaler=taa\nkey_interact=E\nsharpen=1\nkey_roll=Space\nkey_roll=Z\n',
+                           encoding='utf-8')
+            code, out, err = run('save', ini, 'interact=F', 'firearm=X,Mouse2', 'gestures=', 'roll=Left Shift')
+            self.assertEqual((code, out.strip()), (0, 'ok'), err)
+            lines = ini.read_text(encoding='utf-8').splitlines()
+            self.assertEqual(lines[:4], ['# my settings', 'upscaler=taa', 'key_interact=F', 'sharpen=1'])
+            self.assertEqual(lines.count('key_roll=Left Shift'), 1)          # the duplicate is gone
+            self.assertNotIn('key_roll=Z', lines)
+            self.assertIn('key_firearm=X, Mouse2', lines)
+            self.assertIn('key_gestures=none', lines)
+            binds = {r[1]: (r[2], r[3]) for r in rows(run('load', ini)[1]) if r[0] == 'bind'}
+            self.assertEqual(binds['firearm'], ('X', 'Mouse2'))
+            self.assertEqual(binds['gestures'], ('', ''))
 
-    def test_mouse_look_is_written_as_the_python_launcher_does(self):
+    def test_a_mouse_input_alone_and_a_new_file(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'input.ini'
-            path.write_text(cfg.DEFAULT_INPUT_INI, encoding='utf-8')
-            code, _out, err = run('save', path, '--mouse', '1,left,2.5,0.25')
-            self.assertEqual(code, 0, err)
-            text = path.read_text(encoding='utf-8')
-            self.assertIn('\nmouse_to_joystick = left\n', text)
-            self.assertIn('mouse_movement_params = 0.5, 2.5, 0.25', text)
-            mouse = [r for r in rows(run('load', path)[1]) if r[0] == 'mouse'][0]
-            self.assertEqual(mouse[1:5], ['1', 'left', '2.5', '0.25'])
-            run('save', path, '--mouse', '0,right,1,0.125')
-            self.assertIn('# mouse_to_joystick = right', path.read_text(encoding='utf-8'))
+            ini = Path(directory) / 'new.ini'
+            self.assertEqual(run('save', ini, 'attack=,WheelUp')[0], 0)
+            self.assertEqual(ini.read_text(encoding='utf-8'), 'key_attack=WheelUp\n')
 
-    def test_a_stick_direction_refuses_a_mouse_button_and_bad_names_are_refused(self):
+    def test_bad_input_changes_nothing(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'input.ini'
-            path.write_text(cfg.DEFAULT_INPUT_INI, encoding='utf-8')
-            before = path.read_text(encoding='utf-8')
-            for bad in ('axis_left_x_plus=leftbutton', 'cross=notakey', 'bogus=a'):
-                code, _out, err = run('save', path, bad)
+            ini = Path(directory) / 'bbport.ini'
+            ini.write_text('key_interact=E\n', encoding='utf-8')
+            for bad in ('bogus=A', 'interact=Mouse9,Mouse9'):
+                code, _out, err = run('save', ini, bad)
                 self.assertEqual(code, 1, bad)
                 self.assertTrue(err.strip(), bad)
-            self.assertEqual(path.read_text(encoding='utf-8'), before)   # nothing written
+            self.assertEqual(ini.read_text(encoding='utf-8'), 'key_interact=E\n')
 
-    def test_saving_without_edits_does_not_create_the_file(self):
+    def test_no_edits_writes_nothing(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'input.ini'
-            self.assertEqual(run('save', path)[0], 0)
-            self.assertFalse(path.exists())
+            ini = Path(directory) / 'bbport.ini'
+            self.assertEqual(run('save', ini)[0], 0)
+            self.assertFalse(ini.exists())
 
 
 if __name__ == '__main__':

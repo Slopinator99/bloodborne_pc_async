@@ -12,11 +12,13 @@ FIELD = re.compile(r'FLD_(CHECK|COMBO|TEXT|FOLDER|SLIDER|PASSWORD)\(PG_\w+,\s*(S
 # Where the C launcher starts differently on purpose: it defaults to the TAA setup that needs no
 # downloaded FSR 4 assets, a 60 FPS cap and the intro skipped (the game's own AA is off with TAA).
 KNOWN_DIFFERENCES = {
-    ('ST_INI', 'upscaler'): ('taa', 'fsr4'),
-    ('ST_INI', 'preset'): ('0', '1'),
+    ('ST_INI', 'upscaler'): ('taa', 'dlss'),
+    ('ST_INI', 'preset'): ('0', '2'),
+    ('ST_INI', 'output_res'): ('1920x1080', '2560x1440'),
     ('ST_INI', 'skip_intro'): ('1', '0'),
     ('ST_INI', 'effect_game_aa'): ('0', '1'),
     ('ST_APP', 'fps_mode'): ('60', 'uncap'),
+    ('ST_APP', 'play_mode'): ('offline', ''),  # the Python launcher derives it from older settings
 }
 
 

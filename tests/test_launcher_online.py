@@ -1,14 +1,11 @@
-"""scripts/launcher_online.py: the connection test, the online environment and the bridge files."""
+"""scripts/launcher_online.py: The Hunter's Dream's connection test, sign-in and environment."""
 from paths import ROOT
-import http.server
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 
 SCRIPT = ROOT / 'scripts' / 'launcher_online.py'
@@ -23,59 +20,17 @@ def run(*args, appdata=None):
     return done.returncode, done.stdout, done.stderr
 
 
-class StatusHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = b'{"ok": true}' if self.path == '/status' else b'{}'
-        self.send_response(200)
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *_args):
-        pass
-
-
 class CheckTests(unittest.TestCase):
-    def test_reports_each_address_reachable_or_not(self):
-        listener = socket.socket()
-        listener.bind(('127.0.0.1', 0))
-        listener.listen(5)
-        web = http.server.ThreadingHTTPServer(('127.0.0.1', 0), StatusHandler)
-        threading.Thread(target=web.serve_forever, daemon=True).start()
-        try:
-            server = f'127.0.0.1:{listener.getsockname()[1]}'
-            webapi = f'http://127.0.0.1:{web.server_address[1]}'
-            with tempfile.TemporaryDirectory() as saves:
-                code, out, err = run('check', server, webapi, 'http://localhost', 'shadnet', saves, '1')
-        finally:
-            web.shutdown()
-            web.server_close()
-            listener.close()
+    def test_reports_each_address_of_the_game_server(self):
+        code, out, err = run('check', 'http://127.0.0.1')
         self.assertEqual(code, 0, err)
-        self.assertIn(f'Server {server}: reachable', out)
-        self.assertIn(f'WebAPI {webapi}: reachable', out)
-        self.assertIn('Game server http://localhost: not reachable', out)    # nothing listens on 20443
-        self.assertNotIn('Play online', out)
-
-    def test_an_unreachable_server_and_play_online_off(self):
-        with tempfile.TemporaryDirectory() as saves:
-            code, out, err = run('check', '127.0.0.1:1', 'http://127.0.0.1:1', 'http://localhost', 'shadnet', saves, '0')
-        self.assertEqual(code, 0, err)
-        self.assertIn('Server 127.0.0.1:1: not reachable', out)
-        self.assertIn('WebAPI http://127.0.0.1:1: not reachable', out)
-        self.assertIn('"Play online" is off', out)
-
-    def test_a_webapi_box_holding_the_game_server_is_ignored(self):
-        with tempfile.TemporaryDirectory() as saves:
-            code, out, _err = run('check', '127.0.0.1:1', 'https://thehuntersdream.com', 'https://thehuntersdream.com',
-                                  'shadnet', saves, '1')
-        self.assertEqual(code, 0)
-        self.assertIn('is ignored', out)
-        self.assertIn('WebAPI http://127.0.0.1:31315', out)     # the server address with port 31315
+        self.assertIn('Game server 127.0.0.1:20443: not reachable', out)
+        self.assertIn('Co-op service 127.0.0.1:18671: not reachable', out)
 
     def test_usage_error(self):
         self.assertEqual(run()[0], 2)
-        self.assertEqual(run('check', 'only-one')[0], 2)
+        self.assertEqual(run('check')[0], 2)
+        self.assertEqual(run('signin')[0], 2)
 
 
 class EnvironmentTests(unittest.TestCase):
@@ -84,64 +39,56 @@ class EnvironmentTests(unittest.TestCase):
         folder.mkdir(parents=True)
         (folder / 'settings.json').write_text(json.dumps(values), encoding='utf-8')
 
-    def test_nothing_when_play_online_is_off(self):
+    def env_for(self, **values):
         with tempfile.TemporaryDirectory() as appdata:
-            self.settings(appdata, online=False, online_npid='me')
+            self.settings(appdata, **values)
             code, out, err = run('env', appdata=appdata)
-            self.assertEqual((code, out.strip()), (0, ''), err)
+        self.assertEqual(code, 0, err)
+        return dict(line.split('=', 1) for line in out.splitlines() if line)
 
-    def test_shadnet_environment(self):
-        with tempfile.TemporaryDirectory() as appdata:
-            self.settings(appdata, online=True, online_pool='shadnet', online_server='play.example.org:31313',
-                          online_npid='Hunter', online_password='p w', online_upnp=False,
-                          online_community='https://example.org:443')
-            code, out, err = run('env', appdata=appdata)
-            self.assertEqual(code, 0, err)
-            env = dict(line.split('=', 1) for line in out.splitlines())
-            self.assertEqual(env['BB_ONLINE'], '1')
-            self.assertEqual(env['BB_SHADNET_SERVER'], 'play.example.org:31313')
-            self.assertEqual(env['BB_SHADNET_WEBAPI'], 'http://play.example.org:31315')
-            self.assertEqual(env['BB_SHADNET_NPID'], 'Hunter')
-            self.assertEqual(env['BB_SHADNET_PASSWORD'], 'p w')
-            self.assertEqual(env['BB_UPNP'], '0')
-            self.assertEqual(env['BB_COMMUNITY_SERVER'], 'https://example.org')
-            self.assertNotIn('BB_BRIDGE', env)
-            self.assertFalse(any(name.startswith('BB_GAME') for name in env))   # only the online variables
+    def test_nothing_while_offline_or_in_co_op(self):
+        self.assertEqual(self.env_for(play_mode='offline', thd_token='t', thd_online_id='me'), {})
+        self.assertEqual(self.env_for(play_mode='coop', thd_token='t', thd_online_id='me'), {})
+        self.assertEqual(self.env_for(), {})
 
-    def test_hunters_dream_starts_the_bridge_without_a_shadnet_account(self):
-        with tempfile.TemporaryDirectory() as appdata:
-            self.settings(appdata, online=True, online_pool='huntersdream', bridge_live_map=True,
-                          online_npid='ignored')
-            _code, out, _err = run('env', appdata=appdata)
-            env = dict(line.split('=', 1) for line in out.splitlines())
-            self.assertEqual(env['BB_BRIDGE'], '1')
-            self.assertEqual(env['BB_BRIDGE_LIVE_MAP'], '1')
-            self.assertEqual(env['BB_SHADNET_NPID'], '')
+    def test_hunters_dream_environment(self):
+        env = self.env_for(play_mode='huntersdream', thd_online_id='Hunter', thd_token='secret',
+                           online_community='https://example.org:443', online_upnp=False)
+        self.assertEqual(env['BB_ONLINE'], '1')
+        self.assertEqual(env['BB_NET_BACKEND'], 'thd')
+        self.assertEqual(env['BB_THD_ONLINE_ID'], 'Hunter')
+        self.assertEqual(env['BB_THD_TOKEN'], 'secret')
+        self.assertEqual(env['BB_UPNP'], '0')
+        self.assertEqual(env['BB_COMMUNITY_SERVER'], 'https://example.org')
+        self.assertNotIn('BB_SHADNET_NPID', env)
+        self.assertFalse(any(name.startswith('BB_GAME') for name in env))   # only the online variables
 
-    def test_the_supermedo_pool_of_the_old_launcher_is_read_as_shadnet(self):
-        with tempfile.TemporaryDirectory() as appdata:
-            self.settings(appdata, online=True, online_pool='supermedo', supermedo_user='x',
-                          online_server='play.example.org:31313')
-            _code, out, _err = run('env', appdata=appdata)
-            env = dict(line.split('=', 1) for line in out.splitlines())
-            self.assertEqual(env['BB_SHADNET_SERVER'], 'play.example.org:31313')
-            self.assertNotIn('BB_POOL_NAME', env)
+    def test_the_old_online_settings_still_start_the_hunters_dream(self):
+        env = self.env_for(online=True, online_pool='huntersdream', thd_online_id='A', thd_token='b')
+        self.assertEqual(env['BB_NET_BACKEND'], 'thd')
 
 
-class BridgeTests(unittest.TestCase):
-    def test_makes_the_config_and_lists_the_accounts(self):
-        with tempfile.TemporaryDirectory() as saves:
-            folder = Path(saves) / 'bbbridge'
-            folder.mkdir()
-            (folder / 'bbbridge_state.json').write_text(json.dumps({'accounts': {'hunter-1': {}, 'hunter-2': {}}}))
-            code, out, err = run('bridge', saves)
-            self.assertEqual(code, 0, err)
-            rows = [line.split('\t') for line in out.splitlines()]
-            self.assertEqual([r[0] for r in rows if r[0] == 'account'], ['account', 'account'])
-            self.assertEqual({r[1] for r in rows if r[0] == 'account'}, {'hunter-1', 'hunter-2'})
-            self.assertEqual(Path([r[1] for r in rows if r[0] == 'folder'][0]), folder)
-            config = Path([r[1] for r in rows if r[0] == 'config'][0])
-            self.assertEqual(json.loads(config.read_text())['state_file'], str(folder / 'bbbridge_state.json'))
+class SignInTests(unittest.TestCase):
+    def sign_in(self, fake):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        import launcher_online
+        real, launcher_online.win.thd_sign_in = launcher_online.win.thd_sign_in, fake
+        try:
+            return list(launcher_online.sign_in('https://example.org'))
+        finally:
+            launcher_online.win.thd_sign_in = real
+
+    def test_the_code_comes_before_the_result(self):
+        def fake(server, on_code, cancelled=lambda: False):
+            on_code('https://example.org/link?code=AB-12', 'AB-12')
+            return 'Hunter', 'token'
+        self.assertEqual(self.sign_in(fake), ['code\thttps://example.org/link?code=AB-12\tAB-12',
+                                              'ok\tHunter\ttoken'])
+
+    def test_a_refusal_is_one_error_line(self):
+        def fake(server, on_code, cancelled=lambda: False):
+            raise ValueError('the sign-in was denied')
+        self.assertEqual(self.sign_in(fake), ['error\tthe sign-in was denied'])
 
 
 if __name__ == '__main__':

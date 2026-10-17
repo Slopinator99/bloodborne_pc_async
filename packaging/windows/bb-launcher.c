@@ -42,11 +42,6 @@
 #define ID_LOG_CLEAR 5102
 #define ID_LOG_OPEN 5103
 #define LOG_TIMER 1
-#define ID_TROPHY_LIST 5200
-#define ID_TROPHY_FILTER 5201
-#define ID_TROPHY_REFRESH 5202
-#define ID_TROPHY_SUMMARY 5203
-#define ID_TROPHY_DETAIL 5204
 #define ID_UPDATE_LABEL 5300
 #define ID_UPDATE_INSTALL 5301
 #define ID_UPDATE_NOTES 5302
@@ -61,18 +56,8 @@
 #define WM_FSR4_PROGRESS (WM_APP + 5)   /* wParam: files done, lParam: files in all */
 #define ID_CTL_LIST 5500
 #define ID_CTL_SET 5501
-#define ID_CTL_CLEAR 5502
-#define ID_MOUSE_ON 5503
-#define ID_MOUSE_RIGHT 5504
-#define ID_MOUSE_LEFT 5505
-#define ID_MOUSE_SPEED 5506
-#define ID_MOUSE_OFFSET 5507
-#define ID_MOUSE_SPEED_VAL 5508
-#define ID_MOUSE_OFFSET_VAL 5509
-#define ID_SHORTCUT 5600
-#define ID_STEAM 5601
-#define ID_PORT_FOLDER 5602
-#define ID_CLEAR_CACHE 5603
+#define ID_CTL_CLEAR_KEY 5502
+#define ID_CTL_CLEAR_MOUSE 5503
 #define ID_OL_ACCOUNT 5700
 #define ID_OL_SIGNIN 5701
 #define ID_OL_SIGNMSG 5702
@@ -80,9 +65,20 @@
 #define ID_OL_COPY 5704
 #define ID_OL_TEST 5705
 #define ID_OL_RESULT 5706
-#define WM_ONLINE_LINE (WM_APP + 7)   /* lParam: malloc'd line of bbbridge-cli's output */
-#define WM_ONLINE_DONE (WM_APP + 8)   /* the sign-in process ended */
+#define ID_OL_SIGNOUT 5707
+#define ID_CO_STATUS 5710
+#define ID_CO_SETUP 5711
+#define ID_CO_HOST 5712
+#define ID_CO_STOP 5713
+#define ID_CO_COPY 5714
+#define ID_CO_INVITE 5715
+#define WM_ONLINE_LINE (WM_APP + 7)   /* wParam: the job; lParam: malloc'd line of its output */
+#define WM_ONLINE_DONE (WM_APP + 8)   /* wParam: the job whose process ended */
 #define WM_ONLINE_CHECK (WM_APP + 9)  /* lParam: malloc'd text of the connection test */
+#define ID_SHORTCUT 5600
+#define ID_STEAM 5601
+#define ID_PORT_FOLDER 5602
+#define ID_CLEAR_CACHE 5603
 #define WM_FSR4_DONE (WM_APP + 6)       /* wParam: 1 when all arrived; lParam: malloc'd message or NULL */
 
 /* This build, and where newer ones come from: the releases of the fork. The tag's numbers are
@@ -124,8 +120,6 @@ static const char* kOutputL[] = {"1280 x 720 (Steam Deck)", "1920 x 1080",      
                                  "3840 x 2160 (4K)",         "2560 x 1080 (21:9)", "3440 x 1440 (21:9)",
                                  "3840 x 1600 (21:9)",       "5120 x 2160 (21:9)", "3840 x 1080 (32:9)",
                                  "5120 x 1440 (32:9)"};
-static const char* kHudV[] = {"100", "75", "50", "25", "0"};
-static const char* kHudL[] = {"Screen edges", "75%", "Halfway", "25%", "Centred (16:9)"};
 static const char* kLiveV[] = {"auto", "0", "1"};
 static const char* kLiveL[] = {"Auto (by graphics card)", "Off (faster)", "On (change without restarting)"};
 static const char* kLodV[] = {"0", "-2", "1", "2"};
@@ -143,24 +137,27 @@ static const char* kPresentL[] = {"Mailbox (low latency, no tearing)", "FIFO (VS
 static const char* kLangV[] = {"1", "8", "0", "2", "3", "4", "5", "17"};
 static const char* kLangL[] = {"English", "Russian", "Japanese", "French", "Spanish", "German",
                                "Italian", "Portugu\xc3\xaas (Brasil)"};
-static const char* kVoiceV[] = {"auto", "eng", "ptb", "ded", "esa", "ese", "frf", "iti", "jaj"};
-static const char* kVoiceL[] = {"As in the game", "English", "Portugu\xc3\xaas (Brasil)", "Deutsch",
-                                "Espa\xc3\xb1ol (Am\xc3\xa9rica)", "Espa\xc3\xb1ol (Espa\xc3\xb1" "a)",
-                                "Fran\xc3\xa7" "ais", "Italiano", "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"};
 static const char* kDrawPipeV[] = {"", "1", "0"};
 static const char* kDrawPipeL[] = {"Auto (8+ threads)", "On", "Off (more stable)"};
-static const char* kPoolV[] = {"shadnet", "huntersdream"};
-static const char* kPoolL[] = {"shadNet server", "The Hunter's Dream (with bbhost players)"};
+static const char* kModeV[] = {"offline", "huntersdream", "coop"};
+static const char* kModeL[] = {"Offline (your own world)", "The Hunter's Dream (online)",
+                               "Seamless co-op (BBSC)"};
+static const char* kSensV[] = {"5", "7", "10", "13", "16", "20", "30"};
+static const char* kSensL[] = {"0.5x", "0.7x", "1.0x (default)", "1.3x", "1.6x", "2.0x", "3.0x"};
+static const char* kSmoothV[] = {"100", "80", "60", "35"};
+static const char* kSmoothL[] = {"Off", "Light", "Medium (default)", "Strong"};
+static const char* kVramV[] = {"", "2560", "3072", "4096", "5120", "6144", "8192"};
+static const char* kVramL[] = {"Automatic (recommended)", "2.5 GB", "3 GB", "4 GB", "5 GB", "6 GB", "8 GB"};
 static const char* kReadbackV[] = {"", "0", "2"};
 static const char* kReadbackL[] = {"Relaxed (default)", "Off", "Precise"};
 
 /* --- the field table --- */
 enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER, K_LIST, K_PASSWORD, K_AREA, K_CUSTOM };
 enum { ST_INI, ST_APP };
-enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_ONLINE, PG_MODS, PG_TROPHIES, PG_CONTROLS, PG_ADV,
+enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_ONLINE, PG_MODS, PG_CONTROLS, PG_ADV,
        PG_LOG, PG_COUNT };
 static const char* kPageNames[PG_COUNT] = {"Play", "Graphics", "Display", "Game",
-                                           "Cheats", "Online", "Mods", "Trophies", "Controls", "Advanced",
+                                           "Cheats", "Online", "Mods", "Controls", "Advanced",
                                            "Log"};
 
 typedef struct {
@@ -206,7 +203,6 @@ static Field g_fields[] = {
     FLD_COMBO(PG_GRAPHICS, ST_INI, "preset", "", "Quality preset:", kPresetV, kPresetL, "0"),
     FLD_COMBO(PG_GRAPHICS, ST_INI, "output_res", "", "Output resolution:", kOutputV, kOutputL,
               "1920x1080"),
-    FLD_COMBO(PG_GRAPHICS, ST_INI, "hud_position", "", "HUD position (21:9):", kHudV, kHudL, "100"),
     FLD_COMBO(PG_GRAPHICS, ST_INI, "live_resolution", "", "Live resolution:", kLiveV, kLiveL, "auto"),
     FLD_CHECK(PG_GRAPHICS, ST_INI, "sharpen", "", "Sharpening (RCAS)", "1"),
     FLD_SLIDER(PG_GRAPHICS, ST_INI, "sharpness", "Sharpness:", "0.50"),
@@ -222,11 +218,11 @@ static Field g_fields[] = {
     FLD_COMBO(PG_DISPLAY, ST_APP, "present_mode", "launcher_present", "Presentation:", kPresentV,
               kPresentL, "Mailbox"),
     FLD_CHECK(PG_DISPLAY, ST_APP, "hdr", "", "Allow HDR output", "0"),
+    FLD_COMBO(PG_DISPLAY, ST_APP, "vram_budget_mb", "", "Video memory budget:", kVramV, kVramL, ""),
     /* Game */
     FLD_FOLDER(PG_GAME, ST_APP, "user_dir", "launcher_user_dir", "Saves folder:"),
     FLD_FOLDER(PG_GAME, ST_APP, "dlc_dir", "", "DLC folder:"),
     FLD_COMBO(PG_GAME, ST_APP, "language", "", "Text language:", kLangV, kLangL, "1"),
-    FLD_COMBO(PG_GAME, ST_APP, "voice_language", "", "Voice language:", kVoiceV, kVoiceL, "auto"),
     FLD_TEXT(PG_GAME, ST_APP, "player_name", "Player name:", ""),
     FLD_HEAD(PG_GAME, "Effects"),
     FLD_CHECK(PG_GAME, ST_INI, "effect_chromatic_aberration", "", "Chromatic aberration", "1"),
@@ -252,25 +248,27 @@ static Field g_fields[] = {
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_no_camera_rotation", "", "No camera auto-rotation while moving", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_easy_run", "", "Run with less stick tilt (about 70%)", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_ragdoll", "", "Dark Souls-style ragdoll physics", "0"),
-    FLD_CHECK(PG_CHEATS, ST_INI, "tweak_circle_confirm", "", "Japanese buttons: Circle confirms, Cross dodges", "0"),
-    FLD_CHECK(PG_CHEATS, ST_INI, "quit_to_desktop", "", "Quit to Desktop in the title and System menus", "1"),
+    /* Controls (the list of bindings sits above these) */
+    FLD_HEAD(PG_CONTROLS, "Mouse and movement"),
+    FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_camera", "", "Mouse camera (while the mouse is captured)", "1"),
+    FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_invert_y", "", "Invert the vertical axis", "0"),
+    FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_menu", "", "Mouse in the menus", "1"),
+    FLD_COMBO(PG_CONTROLS, ST_INI, "mouse_sensitivity", "", "Mouse camera speed:", kSensV, kSensL, "10"),
+    FLD_COMBO(PG_CONTROLS, ST_INI, "move_smoothing", "", "Movement smoothing:", kSmoothV, kSmoothL, "60"),
     /* Online */
-    FLD_CHECK(PG_ONLINE, ST_APP, "online", "", "Play online (off: the game stays offline)", "0"),
-    FLD_COMBO(PG_ONLINE, ST_APP, "online_pool", "", "Co-op pool:", kPoolV, kPoolL, "shadnet"),
-    FLD_TEXT(PG_ONLINE, ST_APP, "online_community", "Game server:", "https://thehuntersdream.com"),
+    FLD_COMBO(PG_ONLINE, ST_APP, "play_mode", "", "Play mode:", kModeV, kModeL, "offline"),
     FLD_AREA(PG_ONLINE, 1),
-    FLD_HEAD(PG_ONLINE, "shadNet server (bells and summons)"),
-    FLD_TEXT(PG_ONLINE, ST_APP, "online_server", "Server address:", "srv.shadps4.net:31313"),
-    FLD_TEXT(PG_ONLINE, ST_APP, "online_webapi", "WebAPI address:", ""),
-    FLD_TEXT(PG_ONLINE, ST_APP, "online_npid", "Online ID (NPID):", ""),
-    FLD_PASSWORD(PG_ONLINE, ST_APP, "online_password", "Password:", ""),
-    FLD_AREA(PG_ONLINE, 2),
-    FLD_HEAD(PG_ONLINE, "The Hunter's Dream account"),
+    FLD_HEAD(PG_ONLINE, "The Hunter's Dream"),
+    FLD_TEXT(PG_ONLINE, ST_APP, "online_community", "Game server:", "https://thehuntersdream.com"),
     FLD_CUSTOM(PG_ONLINE, "hd_custom", 78),
-    FLD_CHECK(PG_ONLINE, ST_APP, "bridge_live_map", "", "Show me on the live map", "1"),
-    FLD_AREA(PG_ONLINE, 0),
     FLD_CHECK(PG_ONLINE, ST_APP, "online_upnp", "", "UPnP (open a port on the router automatically)", "1"),
     FLD_CUSTOM(PG_ONLINE, "test_custom", 74),
+    FLD_AREA(PG_ONLINE, 2),
+    FLD_HEAD(PG_ONLINE, "Seamless co-op"),
+    FLD_TEXT(PG_ONLINE, ST_APP, "coop_name", "Co-op name:", ""),
+    FLD_PASSWORD(PG_ONLINE, ST_APP, "coop_password", "Co-op password:", ""),
+    FLD_TEXT(PG_ONLINE, ST_APP, "coop_invite", "Host's invite code:", ""),
+    FLD_CUSTOM(PG_ONLINE, "coop_custom", 96),
     /* Mods */
     FLD_HEAD(PG_MODS, "Mods"),
     FLD_CHECK(PG_MODS, ST_APP, "mods_enabled", "launcher_mods_on",
@@ -609,9 +607,9 @@ static void set_env(const char* name, const char* v) {
     SetEnvironmentVariableA(name, v);
 }
 
-static void apply_online_env(void);
+static int apply_online_env(void);
 
-static void apply_env(void) {
+static int apply_env(void) {
     char v[1024], path[MAX_PATH + 16];
     cfg_get_str("game_dir", v, sizeof(v), "");
     set_env("BB_GAME_DIR", v);
@@ -633,8 +631,6 @@ static void apply_env(void) {
 
     cfg_get_str("language", v, sizeof(v), "1");
     set_env("BB_LANGUAGE", v);
-    cfg_get_str("voice_language", v, sizeof(v), "auto");
-    set_env("BB_VOICE_LANGUAGE", v);
     if (cfg_get_str("player_name", v, sizeof(v), "")) {
         char* b = v;
         while (*b == ' ') ++b;
@@ -643,6 +639,7 @@ static void apply_env(void) {
         if (*b) set_env("BB_USER_NAME", b);
     }
 
+    if (cfg_get_str("vram_budget_mb", v, sizeof(v), "") && v[0]) set_env("BB_GC_BUDGET_MB", v);
     cfg_get_str("fullscreen", v, sizeof(v), "0");
     set_env("BB_FULLSCREEN", v);
     cfg_get_str("present_mode", v, sizeof(v), "Mailbox");
@@ -670,7 +667,7 @@ static void apply_env(void) {
     set_env("PYTHONUNBUFFERED", "1");
     set_env("PYTHONIOENCODING", "utf-8");
 
-    apply_online_env();
+    if (!apply_online_env()) return 0;
 
     if (cfg_get_str("extra_env", v, sizeof(v), "")) {
         for (char* tok = strtok(v, " "); tok; tok = strtok(NULL, " ")) {
@@ -681,6 +678,7 @@ static void apply_env(void) {
             }
         }
     }
+    return 1;
 }
 
 /* --- run / browse / watch --- */
@@ -759,7 +757,7 @@ static void on_run(void) {
         return;
     }
     if (!save_fields()) return;
-    apply_env();
+    if (!apply_env()) return;
     /* Packaged: the frozen runtime next to us runs run.py itself (--run),
      * so players need no Python. Dev tree: python run.py. */
     char frozen[MAX_PATH], cmd[2048];
@@ -993,7 +991,7 @@ static int run_capture(char* cmd, char* out, size_t n) {
     return run_capture_ms(cmd, out, n, 20000);
 }
 
-/* The command running scripts/<script_name> (launcher_lists.py, launcher_trophies.py): through the frozen runtime when there is one
+/* The command running scripts/<script_name> (launcher_lists.py, launcher_input.py): through the frozen runtime when there is one
  * (--script), else through Python in a source tree. */
 static void helper_command(const char* script_name, const char* args, char* cmd, size_t n) {
     char exedir[MAX_PATH], frozen[MAX_PATH], script[MAX_PATH + 32];
@@ -1552,74 +1550,32 @@ static void build_fsr4_group(HWND page, int y) {
     EnableWindow(button, FALSE);
 }
 
-/* --- Controls tab: keyboard and mouse-button bindings and mouse look ---
- * input.ini is read and written by scripts/launcher_input.py (the Python launcher's own rules,
- * launcher/bbport_input_config.py); only the first binding of an action is edited, the controller
- * lines and any further bindings stay as they are. bb-keys.h turns a pressed key into the name
- * the game accepts. Edits are written with the rest of the settings (Save, Play). */
-#define CTL_MAX 32
+/* --- Controls tab: keyboard and mouse bindings ---
+ * The game keeps one key and one mouse input per action (src/input_bindings.c) as key_<action>
+ * lines of bbport.ini: "key_firearm=X, Mouse2". scripts/launcher_input.py reads and writes those
+ * lines (its action table is checked against the game's), bb-keys.h turns a pressed key into the
+ * SDL name the game parses. Like the game, giving a key or mouse input to one action takes it
+ * from the others. The mouse and movement settings below the list are ordinary fields. Edits are
+ * written with the rest of the settings (Save, Play). */
+#define CTL_MAX 40
 typedef struct {
-    char output[32], label[48], name[24];
-    int stick;
+    char name[32], label[48], key[24], mouse[16];
 } Action;
 static Action g_actions[CTL_MAX];
-static int g_action_n, g_ctl_loaded, g_ctl_edited, g_mouse_edited;
-static char g_reserved[256];
-static int g_mouse_on, g_mouse_right = 1;
-static double g_mouse_speed = 1.0, g_mouse_offset = 0.125;
-
-static void ctl_ini(char* out, size_t n) {
-    snprintf(out, n, "%s\\input.ini", g_root);
-}
-
-static int is_reserved(const char* name) {
-    char list[256], *tok, *save = NULL;
-    snprintf(list, sizeof(list), "%s", g_reserved);
-    for (tok = strtok_s(list, ",", &save); tok; tok = strtok_s(NULL, ",", &save))
-        if (!strcmp(tok, name)) return 1;
-    return 0;
-}
+static int g_action_n, g_ctl_loaded, g_ctl_edited;
 
 static void ctl_show_row(HWND lv, int row) {
-    ListView_SetItemText(lv, row, 1, g_actions[row].name[0] ? g_actions[row].name : "(none)");
-}
-
-static void ctl_show_mouse(void) {
-    HWND page = g_pages[PG_CONTROLS];
-    SendMessageA(GetDlgItem(page, ID_MOUSE_ON), BM_SETCHECK, g_mouse_on ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageA(GetDlgItem(page, ID_MOUSE_RIGHT), BM_SETCHECK, g_mouse_right ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageA(GetDlgItem(page, ID_MOUSE_LEFT), BM_SETCHECK, g_mouse_right ? BST_UNCHECKED : BST_CHECKED, 0);
-    int sp = (int)((g_mouse_speed - 0.1) / 0.1 + 0.5), off = (int)(g_mouse_offset / 0.05 + 0.5);
-    SendMessageA(GetDlgItem(page, ID_MOUSE_SPEED), TBM_SETPOS, TRUE, sp < 0 ? 0 : sp > 49 ? 49 : sp);
-    SendMessageA(GetDlgItem(page, ID_MOUSE_OFFSET), TBM_SETPOS, TRUE, off < 0 ? 0 : off > 20 ? 20 : off);
-    char v[16];
-    snprintf(v, sizeof(v), "%.2f", g_mouse_speed);
-    SetWindowTextA(GetDlgItem(page, ID_MOUSE_SPEED_VAL), v);
-    snprintf(v, sizeof(v), "%.3g", g_mouse_offset);
-    SetWindowTextA(GetDlgItem(page, ID_MOUSE_OFFSET_VAL), v);
-}
-
-static void ctl_read_mouse(void) {
-    HWND page = g_pages[PG_CONTROLS];
-    g_mouse_on = SendMessageA(GetDlgItem(page, ID_MOUSE_ON), BM_GETCHECK, 0, 0) == BST_CHECKED;
-    g_mouse_right = SendMessageA(GetDlgItem(page, ID_MOUSE_RIGHT), BM_GETCHECK, 0, 0) == BST_CHECKED;
-}
-
-/* A slider was moved: its value replaces the stored one. */
-static void ctl_read_sliders(void) {
-    HWND page = g_pages[PG_CONTROLS];
-    g_mouse_speed = 0.1 + 0.1 * SendMessageA(GetDlgItem(page, ID_MOUSE_SPEED), TBM_GETPOS, 0, 0);
-    g_mouse_offset = 0.05 * SendMessageA(GetDlgItem(page, ID_MOUSE_OFFSET), TBM_GETPOS, 0, 0);
+    ListView_SetItemText(lv, row, 1, g_actions[row].key[0] ? g_actions[row].key : "(none)");
+    ListView_SetItemText(lv, row, 2, g_actions[row].mouse[0] ? g_actions[row].mouse : "(none)");
 }
 
 static void controls_refresh(void) {
-    char ini[MAX_PATH], args[MAX_PATH + 16], cmd[4 * MAX_PATH];
-    static char out[32768];
-    ctl_ini(ini, sizeof(ini));
-    snprintf(args, sizeof(args), "load \"%s\"", ini);
+    char args[MAX_PATH + 16], cmd[4 * MAX_PATH];
+    static char out[16384];
+    snprintf(args, sizeof(args), "load \"%s\"", g_ini);
     helper_command("launcher_input.py", args, cmd, sizeof(cmd));
     if (!run_capture(cmd, out, sizeof(out))) {
-        status("Could not read input.ini (no runtime or Python found?).");
+        status("Could not read the key bindings (no runtime or Python found?).");
         return;
     }
     g_action_n = 0;
@@ -1627,99 +1583,78 @@ static void controls_refresh(void) {
     ListView_DeleteAllItems(lv);
     for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
         line[strcspn(line, "\r")] = 0;
-        char* f[6] = {0};
+        char* f[5] = {0};
         int n = 0;
-        for (char* q = line; n < 6;) {
+        for (char* q = line; n < 5;) {
             f[n++] = q;
             char* tab = strchr(q, '\t');
             if (!tab) break;
             *tab = 0;
             q = tab + 1;
         }
-        if (!strcmp(f[0], "action") && n >= 4 && g_action_n < CTL_MAX) {
+        if (!strcmp(f[0], "action") && n >= 3 && g_action_n < CTL_MAX) {
             Action* a = &g_actions[g_action_n];
             memset(a, 0, sizeof(*a));
-            snprintf(a->output, sizeof(a->output), "%s", f[1]);
+            snprintf(a->name, sizeof(a->name), "%s", f[1]);
             snprintf(a->label, sizeof(a->label), "%s", f[2]);
-            a->stick = !strcmp(f[3], "sticks");
             LVITEMA it = {.mask = LVIF_TEXT, .iItem = g_action_n, .pszText = a->label};
             SendMessageA(lv, LVM_INSERTITEMA, 0, (LPARAM)&it);
             ++g_action_n;
         } else if (!strcmp(f[0], "bind") && n >= 2) {
             for (int i = 0; i < g_action_n; ++i)
-                if (!strcmp(g_actions[i].output, f[1])) snprintf(g_actions[i].name, sizeof(g_actions[i].name), "%s", n >= 3 ? f[2] : "");
-        } else if (!strcmp(f[0], "mouse") && n >= 5) {
-            g_mouse_on = f[1][0] == '1';
-            g_mouse_right = strcmp(f[2], "left") != 0;
-            g_mouse_speed = atof(f[3]);
-            g_mouse_offset = atof(f[4]);
-        } else if (!strcmp(f[0], "reserved") && n >= 2) {
-            snprintf(g_reserved, sizeof(g_reserved), "%s", f[1]);
+                if (!strcmp(g_actions[i].name, f[1])) {
+                    snprintf(g_actions[i].key, sizeof(g_actions[i].key), "%s", n >= 3 ? f[2] : "");
+                    snprintf(g_actions[i].mouse, sizeof(g_actions[i].mouse), "%s", n >= 4 ? f[3] : "");
+                }
         }
     }
     for (int i = 0; i < g_action_n; ++i) ctl_show_row(lv, i);
-    ctl_show_mouse();
     g_ctl_loaded = 1;
-    g_ctl_edited = g_mouse_edited = 0;
+    g_ctl_edited = 0;
 }
 
 /* --- the capture window: waits for a key, a mouse button or a wheel turn --- */
-static const char* g_capture_result;
-static int g_capture_done, g_capture_stick;
+static int g_capture_done, g_capture_is_mouse;
 static char g_capture_name[24];
 
-static void capture_finish(const char* name) {
-    g_capture_result = name;
+static void capture_finish(const char* name, int is_mouse) {
+    g_capture_name[0] = 0;
     if (name) snprintf(g_capture_name, sizeof(g_capture_name), "%s", name);
+    g_capture_is_mouse = is_mouse;
     g_capture_done = 1;
 }
 
-static void capture_offer(const char* name) {
+static void capture_key(const char* name) {
     if (!name) {
-        MessageBoxA(g_main, "That key has no bbport name; pick another one.", "Unsupported key", MB_OK | MB_ICONWARNING);
-        return;
-    }
-    if (is_reserved(name)) {
-        char msg[200];
-        snprintf(msg, sizeof(msg), "%s is reserved (menu, recording, or a hotkey) and cannot be bound to a game action.", name);
-        MessageBoxA(g_main, msg, "Reserved", MB_OK | MB_ICONWARNING);
-        capture_finish(NULL);
-        return;
-    }
-    capture_finish(name);
-}
-
-static void capture_mouse(const char* name) {
-    if (g_capture_stick) {
-        MessageBoxA(g_main, "A stick direction can only be bound to a key, not a mouse button.", "Keyboard only",
+        MessageBoxA(g_main, "That key has no name the game knows; pick another one.", "Unsupported key",
                     MB_OK | MB_ICONWARNING);
         return;
     }
-    capture_offer(name);
+    capture_finish(name, 0);
 }
 
 static LRESULT CALLBACK capture_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
-        if (wp == VK_ESCAPE) capture_finish(NULL);
-        else capture_offer(key_name((unsigned)wp, (unsigned)((lp >> 16) & 0xFF), (int)((lp >> 24) & 1)));
+        if (wp == VK_ESCAPE) capture_finish(NULL, 0);
+        else capture_key(key_name((unsigned)wp, (unsigned)((lp >> 16) & 0xFF), (int)((lp >> 24) & 1)));
         return 0;
-    case WM_LBUTTONDOWN: capture_mouse("leftbutton"); return 0;
-    case WM_RBUTTONDOWN: capture_mouse("rightbutton"); return 0;
-    case WM_MBUTTONDOWN: capture_mouse("middlebutton"); return 0;
+    case WM_LBUTTONDOWN: capture_finish("Mouse1", 1); return 0;
+    case WM_RBUTTONDOWN: capture_finish("Mouse2", 1); return 0;
+    case WM_MBUTTONDOWN: capture_finish("Mouse3", 1); return 0;
     case WM_XBUTTONDOWN:
-        capture_mouse(HIWORD(wp) == XBUTTON1 ? "sidebuttonback" : "sidebuttonforward");
+        capture_finish(HIWORD(wp) == XBUTTON1 ? "Mouse4" : "Mouse5", 1);
         return TRUE;
-    case WM_MOUSEWHEEL: capture_mouse((short)HIWORD(wp) > 0 ? "mousewheelup" : "mousewheeldown"); return 0;
-    case WM_MOUSEHWHEEL: capture_mouse((short)HIWORD(wp) > 0 ? "mousewheelright" : "mousewheelleft"); return 0;
-    case WM_CLOSE: capture_finish(NULL); return 0;
+    case WM_MOUSEWHEEL: capture_finish((short)HIWORD(wp) > 0 ? "WheelUp" : "WheelDown", 1); return 0;
+    case WM_CLOSE: capture_finish(NULL, 0); return 0;
     }
     return DefWindowProcA(w, m, wp, lp);
 }
 
-/* Returns the chosen name, or NULL when cancelled. */
-static const char* capture_binding(const Action* a) {
+/* Returns 1 with the chosen name in g_capture_name (g_capture_is_mouse says which kind), or 0 when
+ * cancelled. */
+static int capture_binding(const Action* a) {
     static int registered;
     HINSTANCE inst = GetModuleHandleA(NULL);
     if (!registered) {
@@ -1735,15 +1670,13 @@ static const char* capture_binding(const Action* a) {
                                r.left + ((r.right - r.left) - w) / 2, r.top + ((r.bottom - r.top) - h) / 2, w, h,
                                g_main, NULL, inst, NULL);
     char text[200];
-    snprintf(text, sizeof(text), a->stick ? "Press a key for \"%s\".\n\nEsc cancels."
-                                          : "Press a key or a mouse button, or turn the wheel, for \"%s\".\n\nEsc cancels.",
-             a->label);
+    snprintf(text, sizeof(text),
+             "Press a key, click a mouse button or turn the wheel for \"%s\".\n\nEsc cancels.", a->label);
     HWND msg = CreateWindowA("STATIC", text, WS_CHILD | WS_VISIBLE | SS_CENTER, S(10), S(14), S(300), S(60), win,
                              NULL, inst, NULL);
     SendMessageA(msg, WM_SETFONT, (WPARAM)g_font, 1);
     g_capture_done = 0;
-    g_capture_result = NULL;
-    g_capture_stick = a->stick;
+    g_capture_name[0] = 0;
     EnableWindow(g_main, FALSE);
     ShowWindow(win, SW_SHOW);
     SetForegroundWindow(win);
@@ -1756,107 +1689,98 @@ static const char* capture_binding(const Action* a) {
     EnableWindow(g_main, TRUE);
     DestroyWindow(win);
     SetForegroundWindow(g_main);
-    return g_capture_result ? g_capture_name : NULL;
+    return g_capture_name[0] != 0;
+}
+
+/* One key and one mouse input belong to one action: giving one away takes it from the others, as
+ * the game does when it reads bbport.ini. */
+static void ctl_release(const char* value, int is_mouse, int except_row) {
+    HWND lv = GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST);
+    for (int i = 0; i < g_action_n; ++i) {
+        char* mine = is_mouse ? g_actions[i].mouse : g_actions[i].key;
+        if (i != except_row && !_stricmp(mine, value)) {
+            mine[0] = 0;
+            ctl_show_row(lv, i);
+        }
+    }
+}
+
+static int ctl_selected(void) {
+    int row = ListView_GetNextItem(GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST), -1, LVNI_SELECTED);
+    if (row < 0 || row >= g_action_n) {
+        status("Pick an action in the list first.");
+        return -1;
+    }
+    return row;
 }
 
 static void on_ctl_set(void) {
-    HWND lv = GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST);
-    int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
-    if (row < 0 || row >= g_action_n) {
-        status("Pick an action in the list first.");
-        return;
-    }
-    const char* name = capture_binding(&g_actions[row]);
-    if (!name) return;
-    snprintf(g_actions[row].name, sizeof(g_actions[row].name), "%s", name);
+    int row = ctl_selected();
+    if (row < 0 || !capture_binding(&g_actions[row])) return;
+    Action* a = &g_actions[row];
+    char* slot = g_capture_is_mouse ? a->mouse : a->key;
+    size_t size = g_capture_is_mouse ? sizeof(a->mouse) : sizeof(a->key);
+    ctl_release(g_capture_name, g_capture_is_mouse, row);
+    snprintf(slot, size, "%s", g_capture_name);
     g_ctl_edited = 1;
-    ctl_show_row(lv, row);
+    ctl_show_row(GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST), row);
 }
 
-static void on_ctl_clear(void) {
-    HWND lv = GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST);
-    int row = ListView_GetNextItem(lv, -1, LVNI_SELECTED);
-    if (row < 0 || row >= g_action_n) return;
-    g_actions[row].name[0] = 0;
+static void on_ctl_clear(int mouse) {
+    int row = ctl_selected();
+    if (row < 0) return;
+    (mouse ? g_actions[row].mouse : g_actions[row].key)[0] = 0;
     g_ctl_edited = 1;
-    ctl_show_row(lv, row);
+    ctl_show_row(GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST), row);
 }
 
-/* What the page holds, for the unsaved-changes check. */
+/* What the list holds, for the unsaved-changes check. */
 static void controls_state(char* out, size_t n) {
     out[0] = 0;
-    if (!g_ctl_loaded) return;
-    ctl_read_mouse();
     size_t used = 0;
-    for (int i = 0; i < g_action_n && used + 40 < n; ++i)
-        used += (size_t)snprintf(out + used, n - used, "%s=%s;", g_actions[i].output, g_actions[i].name);
-    if (used + 40 < n) snprintf(out + used, n - used, "mouse=%d,%d,%.2f,%.2f", g_mouse_on, g_mouse_right, g_mouse_speed, g_mouse_offset);
+    for (int i = 0; g_ctl_loaded && i < g_action_n && used + 60 < n; ++i)
+        used += (size_t)snprintf(out + used, n - used, "%s=%s,%s;", g_actions[i].name, g_actions[i].key, g_actions[i].mouse);
 }
 
-/* Writes the edited bindings and mouse look to input.ini. Returns 1 when there was nothing to do
- * or it worked. */
+/* Writes the bindings to bbport.ini when they were edited. Returns 1 when there was nothing to do or
+ * it worked. */
 static int controls_save(void) {
-    if (!g_ctl_loaded) return 1;
-    ctl_read_mouse();
-    if (!g_ctl_edited && !g_mouse_edited) return 1;
-    char ini[MAX_PATH], args[4096], cmd[8192];
+    if (!g_ctl_loaded || !g_ctl_edited) return 1;
+    char args[4096], cmd[8192];
     static char out[4096];
-    ctl_ini(ini, sizeof(ini));
-    int used = snprintf(args, sizeof(args), "save \"%s\"", ini);
-    if (g_ctl_edited)
-        for (int i = 0; i < g_action_n; ++i)
-            used += snprintf(args + used, sizeof(args) - (size_t)used, " %s=%s", g_actions[i].output, g_actions[i].name);
-    if (g_mouse_edited)
-        snprintf(args + used, sizeof(args) - (size_t)used, " --mouse %d,%s,%.3f,%.3f", g_mouse_on,
-                 g_mouse_right ? "right" : "left", g_mouse_speed, g_mouse_offset);
+    int used = snprintf(args, sizeof(args), "save \"%s\"", g_ini);
+    for (int i = 0; i < g_action_n; ++i)
+        used += snprintf(args + used, sizeof(args) - (size_t)used, " \"%s=%s,%s\"", g_actions[i].name, g_actions[i].key,
+                         g_actions[i].mouse);
     helper_command("launcher_input.py", args, cmd, sizeof(cmd));
     if (!run_capture(cmd, out, sizeof(out))) {
         char msg[4200];
-        snprintf(msg, sizeof(msg), "Could not save the controls:\n\n%s", out);
+        snprintf(msg, sizeof(msg), "Could not save the key bindings:\n\n%s", out);
         MessageBoxA(g_main, msg, "Bloodborne", MB_OK | MB_ICONERROR);
         return 0;
     }
-    g_ctl_edited = g_mouse_edited = 0;
+    g_ctl_edited = 0;
     return 1;
 }
 
-static void build_controls_page(HWND page) {
+/* The list and its buttons; returns the y below them, where the mouse and movement fields start. */
+static int build_controls_top(HWND page) {
     HWND lv = CreateWindowExA(WS_EX_CLIENTEDGE, WC_LISTVIEWA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT |
-                              LVS_SINGLESEL | LVS_SHOWSELALWAYS, S(6), S(8), S(PAGE_W - 12), S(148), page,
+                              LVS_SINGLESEL | LVS_SHOWSELALWAYS, S(6), S(8), S(PAGE_W - 12), S(132), page,
                               (HMENU)(INT_PTR)ID_CTL_LIST, NULL, NULL);
     SendMessageA(lv, WM_SETFONT, (WPARAM)g_font, 1);
     ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
-    static const char* heads[] = {"Action", "Key or button"};
-    static const int widths[] = {190, 160};
-    for (int i = 0; i < 2; ++i) {
+    static const char* heads[] = {"Action", "Key", "Mouse"};
+    static const int widths[] = {170, 110, 80};
+    for (int i = 0; i < 3; ++i) {
         LVCOLUMNA col = {.mask = LVCF_TEXT | LVCF_WIDTH, .pszText = (char*)heads[i], .cx = S(widths[i])};
         SendMessageA(lv, LVM_INSERTCOLUMNA, (WPARAM)i, (LPARAM)&col);
     }
-    w_button(page, ID_CTL_SET, "Set...", 6, 162, 80, 23);
-    w_button(page, ID_CTL_CLEAR, "Clear", 92, 162, 80, 23);
-    w_label(page, 0, "Select an action, then Set...", 182, 167, 210);
-
-    int y = 192;
-    HWND group = CreateWindowA("BUTTON", "Mouse look", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, S(6), S(y),
-                               S(PAGE_W - 12), S(112), page, NULL, NULL, NULL);
-    SendMessageA(group, WM_SETFONT, (WPARAM)g_font, 1);
-    w_check(page, ID_MOUSE_ON, "Enable mouse look (F7 toggles it in the game)", 14, y + 16, 360);
-    HWND right = CreateWindowA("BUTTON", "Camera (right stick)", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON | WS_GROUP,
-                               S(14), S(y + 36), S(170), S(16), page, (HMENU)(INT_PTR)ID_MOUSE_RIGHT, NULL, NULL);
-    HWND left = CreateWindowA("BUTTON", "Movement (left stick)", WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, S(190),
-                              S(y + 36), S(180), S(16), page, (HMENU)(INT_PTR)ID_MOUSE_LEFT, NULL, NULL);
-    SendMessageA(right, WM_SETFONT, (WPARAM)g_font, 1);
-    SendMessageA(left, WM_SETFONT, (WPARAM)g_font, 1);
-    w_label(page, 0, "Sensitivity:", 14, y + 62, 100);
-    HWND sp = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, S(124),
-                            S(y + 58), S(220), S(22), page, (HMENU)(INT_PTR)ID_MOUSE_SPEED, NULL, NULL);
-    SendMessageA(sp, TBM_SETRANGE, TRUE, MAKELPARAM(0, 49));
-    w_label(page, ID_MOUSE_SPEED_VAL, "1.00", 350, y + 62, 36);
-    w_label(page, 0, "Minimum turn speed:", 14, y + 88, 110);
-    HWND off = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, S(124),
-                             S(y + 84), S(220), S(22), page, (HMENU)(INT_PTR)ID_MOUSE_OFFSET, NULL, NULL);
-    SendMessageA(off, TBM_SETRANGE, TRUE, MAKELPARAM(0, 20));
-    w_label(page, ID_MOUSE_OFFSET_VAL, "0.13", 350, y + 88, 36);
+    w_button(page, ID_CTL_SET, "Set...", 6, 146, 70, 23);
+    w_button(page, ID_CTL_CLEAR_KEY, "Clear key", 82, 146, 76, 23);
+    w_button(page, ID_CTL_CLEAR_MOUSE, "Clear mouse", 164, 146, 84, 23);
+    w_label(page, 0, "Select an action, then Set...", 258, 151, 140);
+    return 176;
 }
 
 /* --- Advanced: desktop shortcut, Steam library, port folder --- */
@@ -1966,14 +1890,15 @@ static void pool_register_new(HWND page, const Kids* before, int mask) {
 }
 
 /* --- Online tab ---
- * The shadNet / Hunter's Dream settings are ordinary fields (settings.json, shared with the
- * Python launcher). scripts/launcher_online.py supplies what needs the Python launcher's rules:
- * the connection test, the environment variables of the online settings, and the files of
- * The Hunter's Dream sign-in. The Discord sign-in itself runs bbbridge-cli.exe here and streams
- * its output into the page. */
-static char g_bridge_cli[MAX_PATH], g_bridge_folder[MAX_PATH], g_bridge_config[MAX_PATH];
-static char g_bridge_accounts[256];
-static int g_signing, g_checking;
+ * Play mode, The Hunter's Dream and seamless co-op settings are ordinary fields (settings.json,
+ * shared with the Python launcher). scripts/launcher_online.py (the connection test, the Discord
+ * sign-in by device code, the environment of The Hunter's Dream) and scripts/launcher_coop.py
+ * (BBSC: downloads, firewall, hosting, accounts, the co-op environment) hold the rules; they run
+ * as jobs whose output lines arrive in the page. */
+enum { JOB_SIGNIN, JOB_COOP, JOB_COOP_STATUS };
+static int g_signing, g_checking, g_coop_busy;
+static int g_co_client, g_co_server, g_co_setup, g_co_hosting, g_co_failed;
+static char g_co_job[16];
 
 static void online_saves(char* out, size_t n) {
     GetWindowTextA(field_by_key("user_dir")->hwnd, out, (int)n);
@@ -1994,63 +1919,62 @@ static HWND ol(int id) {
     return GetDlgItem(g_pages[PG_ONLINE], id);
 }
 
-static void online_show_accounts(void) {
-    char text[300];
-    if (g_bridge_accounts[0]) snprintf(text, sizeof(text), "Signed in as %s", g_bridge_accounts);
+/* UTF-8 text (the helpers' output) into a control. */
+static void set_text_utf8(HWND h, const char* utf8) {
+    int wide = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+    wchar_t* buf = wide > 0 ? malloc((size_t)wide * sizeof(wchar_t)) : NULL;
+    if (!buf) return;
+    MultiByteToWideChar(CP_UTF8, 0, utf8, -1, buf, wide);
+    SetWindowTextW(h, buf);
+    free(buf);
+}
+
+static void online_show_account(void) {
+    char id[64], token[8], text[120];
+    cfg_get_str("thd_online_id", id, sizeof(id), "");
+    cfg_get_str("thd_token", token, sizeof(token), "");
+    int in = id[0] && token[0];
+    if (in) snprintf(text, sizeof(text), "Signed in as %s", id);
     else snprintf(text, sizeof(text), "Not signed in");
     SetWindowTextA(ol(ID_OL_ACCOUNT), text);
+    EnableWindow(ol(ID_OL_SIGNOUT), in);
 }
 
-static void bridge_load(void) {
-    char saves[MAX_PATH], args[MAX_PATH + 16], cmd[4 * MAX_PATH];
-    static char out[8192];
-    online_saves(saves, sizeof(saves));
-    char a[MAX_PATH];
-    cmd_arg(saves, a, sizeof(a));
-    snprintf(args, sizeof(args), "bridge \"%s\"", a);
-    helper_command("launcher_online.py", args, cmd, sizeof(cmd));
-    g_bridge_cli[0] = g_bridge_folder[0] = g_bridge_config[0] = g_bridge_accounts[0] = 0;
-    if (run_capture(cmd, out, sizeof(out))) {
-        for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
-            line[strcspn(line, "\r")] = 0;
-            if (!strncmp(line, "cli\t", 4)) snprintf(g_bridge_cli, sizeof(g_bridge_cli), "%s", line + 4);
-            else if (!strncmp(line, "folder\t", 7)) snprintf(g_bridge_folder, sizeof(g_bridge_folder), "%s", line + 7);
-            else if (!strncmp(line, "config\t", 7)) snprintf(g_bridge_config, sizeof(g_bridge_config), "%s", line + 7);
-            else if (!strncmp(line, "account\t", 8)) {
-                if (g_bridge_accounts[0]) strncat(g_bridge_accounts, ", ", sizeof(g_bridge_accounts) - strlen(g_bridge_accounts) - 1);
-                strncat(g_bridge_accounts, line + 8, sizeof(g_bridge_accounts) - strlen(g_bridge_accounts) - 1);
-            }
-        }
-    }
-    online_show_accounts();
+static void coop_buttons(void) {
+    char invite[8];
+    GetWindowTextA(ol(ID_CO_INVITE), invite, sizeof(invite));
+    EnableWindow(ol(ID_CO_SETUP), !g_coop_busy);
+    EnableWindow(ol(ID_CO_HOST), !g_coop_busy && !g_co_hosting);
+    EnableWindow(ol(ID_CO_STOP), !g_coop_busy && g_co_hosting);
+    EnableWindow(ol(ID_CO_COPY), invite[0] != 0);
 }
 
-static void online_apply_pool(void) {
-    int sel = (int)SendMessageA(field_by_key("online_pool")->hwnd, CB_GETCURSEL, 0, 0);
-    int bit = sel == 1 ? 2 : 1;
-    for (int i = 0; i < g_pool_n; ++i) ShowWindow(g_pool_ctl[i], (g_pool_mask[i] & bit) ? SW_SHOW : SW_HIDE);
-}
+/* The jobs: a helper command whose output lines are posted to the window as they come. */
+typedef struct {
+    int kind;
+    char cmd[4 * MAX_PATH];
+} Job;
 
-static DWORD WINAPI signin_thread(LPVOID unused) {
-    (void)unused;
+static DWORD WINAPI job_thread(LPVOID param) {
+    Job* job = param;
     SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa), .bInheritHandle = TRUE};
     HANDLE rd, wr;
     if (!CreatePipe(&rd, &wr, &sa, 0)) {
-        PostMessageA(g_main, WM_ONLINE_LINE, 0, (LPARAM)_strdup("failed: could not make a pipe"));
-        PostMessageA(g_main, WM_ONLINE_DONE, 0, 0);
+        PostMessageA(g_main, WM_ONLINE_LINE, (WPARAM)job->kind, (LPARAM)_strdup("error\tcould not make a pipe"));
+        PostMessageA(g_main, WM_ONLINE_DONE, (WPARAM)job->kind, 0);
+        free(job);
         return 0;
     }
     SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
     HANDLE nul = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
     STARTUPINFOA si = {.cb = sizeof(si), .dwFlags = STARTF_USESTDHANDLES, .hStdInput = nul, .hStdOutput = wr, .hStdError = wr};
-    char cmd[3 * MAX_PATH];
-    snprintf(cmd, sizeof(cmd), "\"%s\" --config \"%s\" --link-discord", g_bridge_cli, g_bridge_config);
     PROCESS_INFORMATION pi;
-    BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, g_bridge_folder, &si, &pi);
+    BOOL ok = CreateProcessA(NULL, job->cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, g_root, &si, &pi);
     CloseHandle(wr);
     if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
     if (!ok) {
-        PostMessageA(g_main, WM_ONLINE_LINE, 0, (LPARAM)_strdup("failed: bbbridge-cli.exe could not be started"));
+        PostMessageA(g_main, WM_ONLINE_LINE, (WPARAM)job->kind,
+                     (LPARAM)_strdup("error\tthe helper could not be started (no runtime or Python found?)"));
     } else {
         char line[1024];
         size_t used = 0;
@@ -2060,7 +1984,7 @@ static DWORD WINAPI signin_thread(LPVOID unused) {
             if (c == '\n' || used + 1 >= sizeof(line)) {
                 line[used] = 0;
                 while (used && (line[used - 1] == '\r' || line[used - 1] == ' ')) line[--used] = 0;
-                if (used) PostMessageA(g_main, WM_ONLINE_LINE, 0, (LPARAM)_strdup(line));
+                if (used) PostMessageA(g_main, WM_ONLINE_LINE, (WPARAM)job->kind, (LPARAM)_strdup(line));
                 used = 0;
             } else {
                 line[used++] = c;
@@ -2071,77 +1995,182 @@ static DWORD WINAPI signin_thread(LPVOID unused) {
         CloseHandle(pi.hProcess);
     }
     CloseHandle(rd);
-    PostMessageA(g_main, WM_ONLINE_DONE, 0, 0);
+    PostMessageA(g_main, WM_ONLINE_DONE, (WPARAM)job->kind, 0);
+    free(job);
     return 0;
+}
+
+static int job_start(int kind, const char* script, const char* args) {
+    Job* job = calloc(1, sizeof(Job));
+    if (!job) return 0;
+    job->kind = kind;
+    helper_command(script, args, job->cmd, sizeof(job->cmd));
+    HANDLE t = CreateThread(NULL, 0, job_thread, job, 0, NULL);
+    if (!t) {
+        free(job);
+        return 0;
+    }
+    CloseHandle(t);
+    return 1;
+}
+
+static void coop_say(const char* text) {
+    set_text_utf8(ol(ID_CO_STATUS), text);
+}
+
+/* A co-op command (setup, host, stop) or the status check. */
+static void coop_job(const char* command) {
+    if (g_coop_busy) return;
+    snprintf(g_co_job, sizeof(g_co_job), "%s", command);
+    g_co_failed = 0;
+    g_coop_busy = 1;
+    coop_buttons();
+    if (!job_start(!strcmp(command, "status") ? JOB_COOP_STATUS : JOB_COOP, "launcher_coop.py", command)) {
+        g_coop_busy = 0;
+        coop_say("The co-op helper could not be started.");
+        coop_buttons();
+        return;
+    }
+    if (!strcmp(command, "setup")) coop_say("Setting co-op up...");
+    else if (!strcmp(command, "host")) coop_say("Starting the co-op servers...");
+}
+
+static void online_refresh(void) {
+    online_show_account();
+    coop_buttons();
+    if (!g_coop_busy) coop_job("status");
+}
+
+static void online_apply_pool(void) {
+    int sel = (int)SendMessageA(field_by_key("play_mode")->hwnd, CB_GETCURSEL, 0, 0);
+    int bit = sel == 1 ? 1 : sel == 2 ? 2 : 0;
+    for (int i = 0; i < g_pool_n; ++i) ShowWindow(g_pool_ctl[i], (g_pool_mask[i] & bit) ? SW_SHOW : SW_HIDE);
 }
 
 static void on_online_signin(void) {
     if (g_signing) return;
-    bridge_load();
-    if (!g_bridge_cli[0]) {
-        SetWindowTextA(ol(ID_OL_SIGNMSG), "bbbridge-cli.exe is missing from this installation.");
-        return;
-    }
-    if (!g_bridge_config[0]) {
-        SetWindowTextA(ol(ID_OL_SIGNMSG), "Sign-in failed: the bridge folder could not be made.");
-        return;
-    }
+    char community[256], a[MAX_PATH], args[MAX_PATH + 16];
+    GetWindowTextA(field_by_key("online_community")->hwnd, community, sizeof(community));
+    cmd_arg(community, a, sizeof(a));
+    snprintf(args, sizeof(args), "signin \"%s\"", a);
     SetWindowTextA(ol(ID_OL_SIGNMSG), "Starting the sign-in...");
     SetWindowTextA(ol(ID_OL_CODE), "");
     EnableWindow(ol(ID_OL_COPY), FALSE);
     g_signing = 1;
     EnableWindow(ol(ID_OL_SIGNIN), FALSE);
-    HANDLE t = CreateThread(NULL, 0, signin_thread, NULL, 0, NULL);
-    if (t) CloseHandle(t);
+    if (!job_start(JOB_SIGNIN, "launcher_online.py", args)) {
+        g_signing = 0;
+        EnableWindow(ol(ID_OL_SIGNIN), TRUE);
+        SetWindowTextA(ol(ID_OL_SIGNMSG), "The sign-in helper could not be started.");
+    }
 }
 
-/* One line of bbbridge-cli's output. */
-static void on_online_line(char* line) {
-    const char* open = "Open ";
-    const char* mid = " and enter the code ";
-    char* m = strstr(line, mid);
-    if (!strncmp(line, open, strlen(open)) && m) {
-        char url[512], code[64];
-        snprintf(url, sizeof(url), "%.*s", (int)(m - line - strlen(open)), line + strlen(open));
-        snprintf(code, sizeof(code), "%s", m + strlen(mid));
+static void on_online_signout(void) {
+    cfg_set_str("thd_online_id", "");
+    cfg_set_str("thd_token", "");
+    cfg_save();
+    online_show_account();
+    status("Signed out of The Hunter's Dream.");
+}
+
+/* One line of the sign-in: code<TAB>page<TAB>code, ok<TAB>id<TAB>token or error<TAB>reason. */
+static void on_signin_line(char* line) {
+    if (!strncmp(line, "code\t", 5)) {
+        char* url = line + 5;
+        char* tab = strchr(url, '\t');
+        if (!tab) return;
+        *tab = 0;
         char msg[700];
-        snprintf(msg, sizeof(msg), "In the page that opened (%s), sign in with Discord and enter this code:", url);
+        snprintf(msg, sizeof(msg), "In the page that opened, sign in with Discord and approve this code:");
         SetWindowTextA(ol(ID_OL_SIGNMSG), msg);
-        SetWindowTextA(ol(ID_OL_CODE), code);
+        SetWindowTextA(ol(ID_OL_CODE), tab + 1);
         EnableWindow(ol(ID_OL_COPY), TRUE);
         if (!strncmp(url, "http", 4)) ShellExecuteA(g_main, "open", url, NULL, NULL, SW_SHOWNORMAL);
-    } else if (!strncmp(line, "signed in as ", 13)) {
+    } else if (!strncmp(line, "ok\t", 3)) {
+        char* tab = strchr(line + 3, '\t');
+        if (!tab) return;
+        *tab = 0;
+        cfg_set_str("thd_online_id", line + 3);
+        cfg_set_str("thd_token", tab + 1);
+        cfg_save();
         SetWindowTextA(ol(ID_OL_SIGNMSG), "");
         SetWindowTextA(ol(ID_OL_CODE), "");
         EnableWindow(ol(ID_OL_COPY), FALSE);
-        bridge_load();
-    } else if (!strncmp(line, "failed", 6)) {
-        const char* why = strchr(line, ':');
+        online_show_account();
+    } else if (!strncmp(line, "error\t", 6)) {
         char msg[700];
-        snprintf(msg, sizeof(msg), "Sign-in failed: %s", why ? why + 1 + (why[1] == ' ') : line);
-        SetWindowTextA(ol(ID_OL_SIGNMSG), msg);
+        snprintf(msg, sizeof(msg), "Sign-in failed: %s", line + 6);
+        set_text_utf8(ol(ID_OL_SIGNMSG), msg);
         SetWindowTextA(ol(ID_OL_CODE), "");
         EnableWindow(ol(ID_OL_COPY), FALSE);
+    }
+}
+
+/* One line of a co-op command; the tab splits its kind from its text. */
+static void on_coop_line(char* line) {
+    char* tab = strchr(line, '\t');
+    if (!tab) return;
+    *tab++ = 0;
+    if (!strcmp(line, "client")) g_co_client = *tab == '1';
+    else if (!strcmp(line, "server")) g_co_server = *tab == '1';
+    else if (!strcmp(line, "setup")) g_co_setup = *tab == '1';
+    else if (!strcmp(line, "hosting")) g_co_hosting = *tab == '1';
+    else if (!strcmp(line, "invite")) SetWindowTextA(ol(ID_CO_INVITE), tab);
+    else if (!strcmp(line, "status") || !strcmp(line, "ok")) coop_say(tab);
+    else if (!strcmp(line, "error")) {
+        g_co_failed = 1;
+        coop_say(tab);
+    }
+}
+
+static void on_coop_done(int kind) {
+    g_coop_busy = 0;
+    if (kind == JOB_COOP && !g_co_failed) {
+        if (!strcmp(g_co_job, "setup")) g_co_client = g_co_server = g_co_setup = 1;
+        else if (!strcmp(g_co_job, "host")) g_co_hosting = 1;
+        else if (!strcmp(g_co_job, "stop")) {
+            g_co_hosting = 0;
+            SetWindowTextA(ol(ID_CO_INVITE), "");
+            coop_say("Stopped hosting.");
+        }
+    }
+    if (kind == JOB_COOP_STATUS) {
+        if (!g_co_hosting) SetWindowTextA(ol(ID_CO_INVITE), "");
+        if (g_co_hosting) coop_say("Hosting from this PC. Send the invite code to your friend.");
+        else if (!g_co_client || !g_co_server) coop_say("Co-op needs BBSC (a download) and one Windows prompt: press Set up co-op.");
+        else if (!g_co_setup) coop_say("The firewall rules are missing: press Set up co-op.");
+        else coop_say("Ready: host a session, or paste a host's invite code and press Play.");
+    }
+    coop_buttons();
+}
+
+static void copy_text(const char* text) {
+    size_t len = strlen(text);
+    if (!len) return;
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, len + 1);
+    if (!mem) return;
+    memcpy(GlobalLock(mem), text, len + 1);
+    GlobalUnlock(mem);
+    if (OpenClipboard(g_main)) {
+        EmptyClipboard();
+        SetClipboardData(CF_TEXT, mem);
+        CloseClipboard();
+        status("Copied to the clipboard.");
+    } else {
+        GlobalFree(mem);
     }
 }
 
 static void on_online_copy_code(void) {
     char code[64];
     GetWindowTextA(ol(ID_OL_CODE), code, sizeof(code));
-    size_t len = strlen(code);
-    if (!len) return;
-    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, len + 1);
-    if (!mem) return;
-    memcpy(GlobalLock(mem), code, len + 1);
-    GlobalUnlock(mem);
-    if (OpenClipboard(g_main)) {
-        EmptyClipboard();
-        SetClipboardData(CF_TEXT, mem);
-        CloseClipboard();
-        status("The code was copied to the clipboard.");
-    } else {
-        GlobalFree(mem);
-    }
+    copy_text(code);
+}
+
+static void on_coop_copy(void) {
+    char invite[1024];
+    GetWindowTextA(ol(ID_CO_INVITE), invite, sizeof(invite));
+    copy_text(invite);
 }
 
 static char g_check_args[4 * MAX_PATH];
@@ -2159,19 +2188,10 @@ static DWORD WINAPI online_check_thread(LPVOID unused) {
 
 static void on_online_test(void) {
     if (g_checking) return;
-    char server[256], webapi[256], community[256], saves[MAX_PATH], a[5][MAX_PATH];
-    GetWindowTextA(field_by_key("online_server")->hwnd, server, sizeof(server));
-    GetWindowTextA(field_by_key("online_webapi")->hwnd, webapi, sizeof(webapi));
+    char community[256], a[MAX_PATH];
     GetWindowTextA(field_by_key("online_community")->hwnd, community, sizeof(community));
-    online_saves(saves, sizeof(saves));
-    int sel = (int)SendMessageA(field_by_key("online_pool")->hwnd, CB_GETCURSEL, 0, 0);
-    int on = SendMessageA(field_by_key("online")->hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    cmd_arg(server, a[0], MAX_PATH);
-    cmd_arg(webapi, a[1], MAX_PATH);
-    cmd_arg(community, a[2], MAX_PATH);
-    cmd_arg(saves, a[3], MAX_PATH);
-    snprintf(g_check_args, sizeof(g_check_args), "check \"%s\" \"%s\" \"%s\" %s \"%s\" %d", a[0], a[1], a[2],
-             sel == 1 ? "huntersdream" : "shadnet", a[3], on);
+    cmd_arg(community, a, MAX_PATH);
+    snprintf(g_check_args, sizeof(g_check_args), "check \"%s\"", a);
     SetWindowTextA(ol(ID_OL_RESULT), "Checking...");
     EnableWindow(ol(ID_OL_TEST), FALSE);
     g_checking = 1;
@@ -2185,18 +2205,48 @@ static void on_online_check_done(char* text) {
     /* The text is shown as UTF-8; a trailing newline would leave an empty line. */
     size_t len = strlen(text);
     while (len && (text[len - 1] == '\n' || text[len - 1] == '\r')) text[--len] = 0;
-    SetWindowTextA(ol(ID_OL_RESULT), text);
+    set_text_utf8(ol(ID_OL_RESULT), text);
     free(text);
 }
 
-/* The BB_ variables of the online settings, from the Python launcher's own rules. */
-static void apply_online_env(void) {
-    char v[16];
-    if (!(cfg_get_str("online", v, sizeof(v), "0") && !strcmp(v, "1"))) return;
-    char cmd[4 * MAX_PATH];
-    static char out[8192];
-    helper_command("launcher_online.py", "env", cmd, sizeof(cmd));
-    if (!run_capture(cmd, out, sizeof(out))) return;
+/* The BB_ variables of the play mode, from the Python launcher's own rules. Returns 0 (after
+ * saying why) when the mode cannot start: not signed in, co-op not ready. */
+static int apply_online_env(void) {
+    char mode[32], cmd[4 * MAX_PATH];
+    static char out[16384];
+    cfg_get_str("play_mode", mode, sizeof(mode), "offline");
+    const char* script;
+    DWORD wait;
+    if (!strcmp(mode, "huntersdream")) {
+        char id[64], token[8];
+        cfg_get_str("thd_online_id", id, sizeof(id), "");
+        cfg_get_str("thd_token", token, sizeof(token), "");
+        if (!id[0] || !token[0]) {
+            MessageBoxA(g_main, "Sign in to The Hunter's Dream first (Online tab: Sign in with Discord), "
+                                "or choose Offline.", "Bloodborne", MB_OK | MB_ICONINFORMATION);
+            status("Sign in to The Hunter's Dream first.");
+            return 0;
+        }
+        script = "launcher_online.py";
+        wait = 20000;
+    } else if (!strcmp(mode, "coop")) {
+        status("Getting co-op ready...");
+        script = "launcher_coop.py";
+        wait = 180000;
+    } else {
+        return 1;
+    }
+    helper_command(script, "env", cmd, sizeof(cmd));
+    int ok = run_capture_ms(cmd, out, sizeof(out), wait);
+    if (!ok) {
+        char* reason = strstr(out, "error\t");
+        char msg[1200];
+        snprintf(msg, sizeof(msg), "%s", reason ? reason + 6 : "The play mode could not be prepared.");
+        msg[strcspn(msg, "\r\n")] = 0;
+        MessageBoxA(g_main, msg, "Bloodborne", MB_OK | MB_ICONWARNING);
+        status(msg);
+        return 0;
+    }
     for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
         line[strcspn(line, "\r")] = 0;
         char* eq = strchr(line, '=');
@@ -2205,6 +2255,7 @@ static void apply_online_env(void) {
             set_env(line, eq + 1);
         }
     }
+    return 1;
 }
 
 static void build_online_extras(HWND page) {
@@ -2213,6 +2264,7 @@ static void build_online_extras(HWND page) {
     kids_of(page, &before);
     w_label(page, ID_OL_ACCOUNT, "", 14, y, 360);
     w_button(page, ID_OL_SIGNIN, "Sign in with Discord", 14, y + 16, 132, 23);
+    w_button(page, ID_OL_SIGNOUT, "Sign out", 152, y + 16, 70, 23);
     HWND msg = w_label(page, ID_OL_SIGNMSG, "", 14, y + 44, PAGE_W - 40);
     SetWindowPos(msg, NULL, S(14), S(y + 44), S(PAGE_W - 40), S(14), SWP_NOZORDER);
     HWND code = w_label(page, ID_OL_CODE, "", 14, y + 60, 130);
@@ -2220,12 +2272,25 @@ static void build_online_extras(HWND page) {
     SetWindowPos(code, NULL, S(14), S(y + 60), S(130), S(18), SWP_NOZORDER);
     HWND copy = w_button(page, ID_OL_COPY, "Copy", 152, y + 58, 52, 20);
     EnableWindow(copy, FALSE);
-    pool_register_new(page, &before, 2);
-
     int ty = field_by_key("test_custom")->id;
     w_button(page, ID_OL_TEST, "Test connection", 10, ty + 2, 110, 23);
     HWND result = w_label(page, ID_OL_RESULT, "", 10, ty + 30, PAGE_W - 24);
     SetWindowPos(result, NULL, S(10), S(ty + 30), S(PAGE_W - 24), S(44), SWP_NOZORDER);
+    pool_register_new(page, &before, 1);
+
+    kids_of(page, &before);
+    int cy = field_by_key("coop_custom")->id;
+    HWND st = w_label(page, ID_CO_STATUS, "", 14, cy, PAGE_W - 40);
+    SetWindowPos(st, NULL, S(14), S(cy), S(PAGE_W - 40), S(30), SWP_NOZORDER);
+    w_button(page, ID_CO_SETUP, "Set up co-op", 14, cy + 34, 96, 23);
+    w_button(page, ID_CO_HOST, "Start hosting", 116, cy + 34, 92, 23);
+    w_button(page, ID_CO_STOP, "Stop hosting", 214, cy + 34, 88, 23);
+    w_label(page, 0, "Your invite:", 14, cy + 66, 66);
+    HWND invite = w_edit(page, ID_CO_INVITE, 84, cy + 62, PAGE_W - 84 - 80 - 14);
+    SendMessageA(invite, EM_SETREADONLY, TRUE, 0);
+    w_button(page, ID_CO_COPY, "Copy", PAGE_W - 80 - 6, cy + 61, 56, 23);
+    pool_register_new(page, &before, 2);
+    coop_buttons();
 }
 
 /* --- Advanced: the shader cache --- */
@@ -2244,127 +2309,6 @@ static void on_clear_cache(void) {
         return;
     rmtree(cache);
     status("Shader cache cleared.");
-}
-
-/* --- Trophies tab: the unlocks the game made, with the trophy list of the Python launcher ---
- * scripts/launcher_trophies.py prints one line per trophy (id, set, grade, name, description,
- * unlock time); the list is the launcher's own bbport_trophies.py, not a copy. */
-#define TROPHY_MAX 64
-typedef struct {
-    int id;
-    char set[32], grade[16], name[100], text[220];
-    long long when;
-} Trophy;
-static Trophy g_trophies[TROPHY_MAX];
-static int g_trophy_n;
-static DWORD g_trophy_tick;
-
-static void trophy_dir(char* out, size_t n) {
-    GetWindowTextA(field_by_key("user_dir")->hwnd, out, (int)n);
-    if (!out[0]) snprintf(out, n, "%s\\user", g_root);
-    trim_slashes(out);
-}
-
-static void trophies_fill(void) {
-    HWND lv = GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_LIST);
-    int filter = (int)SendMessageA(GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_FILTER), CB_GETCURSEL, 0, 0);
-    static const char* grades[] = {"platinum", "gold", "silver", "bronze"};
-    static const char* names[] = {"Platinum", "Gold", "Silver", "Bronze"};
-    int have[4] = {0}, total[4] = {0}, earned = 0;
-    ListView_DeleteAllItems(lv);
-    int row = 0;
-    for (int i = 0; i < g_trophy_n; ++i) {
-        const Trophy* t = &g_trophies[i];
-        int g = 0;
-        while (g < 3 && strcmp(t->grade, grades[g])) ++g;
-        ++total[g];
-        if (t->when) {
-            ++have[g];
-            ++earned;
-        }
-        if ((filter == 1 && !t->when) || (filter == 2 && t->when)) continue;
-        char grade[48], when[32] = "Locked";
-        snprintf(grade, sizeof(grade), "%s%s", names[g], strcmp(t->set, "Bloodborne") ? " (DLC)" : "");
-        if (t->when) {
-            time_t tt = (time_t)t->when;
-            struct tm* tm = localtime(&tt);
-            if (tm) strftime(when, sizeof(when), "%d %b %Y", tm);
-        }
-        LVITEMA it = {.mask = LVIF_TEXT | LVIF_PARAM, .iItem = row, .pszText = (char*)t->name, .lParam = i};
-        SendMessageA(lv, LVM_INSERTITEMA, 0, (LPARAM)&it);
-        ListView_SetItemText(lv, row, 1, grade);
-        ListView_SetItemText(lv, row, 2, when);
-        ListView_SetItemText(lv, row, 3, (char*)t->text);
-        ++row;
-    }
-    SetWindowTextA(GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_DETAIL), "");
-    char summary[256];
-    snprintf(summary, sizeof(summary),
-             "%d of %d trophies earned (%d%%)\nPlatinum %d/%d   Gold %d/%d   Silver %d/%d   Bronze %d/%d",
-             earned, g_trophy_n, g_trophy_n ? earned * 100 / g_trophy_n : 0, have[0], total[0],
-             have[1], total[1], have[2], total[2], have[3], total[3]);
-    SetWindowTextA(GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_SUMMARY), summary);
-}
-
-static void trophies_refresh(void) {
-    char saves[MAX_PATH], args[2 * MAX_PATH + 16], cmd[4 * MAX_PATH], log[MAX_PATH + 24];
-    static char out[65536];
-    trophy_dir(saves, sizeof(saves));
-    log_path(log, sizeof(log));
-    snprintf(args, sizeof(args), "\"%s\" \"%s\"", saves, log);
-    helper_command("launcher_trophies.py", args, cmd, sizeof(cmd));
-    status("Reading trophies...");
-    if (!run_capture(cmd, out, sizeof(out))) {
-        status("Could not read the trophies (no runtime or Python found?).");
-        return;
-    }
-    g_trophy_n = 0;
-    for (char* line = strtok(out, "\n"); line && g_trophy_n < TROPHY_MAX; line = strtok(NULL, "\n")) {
-        line[strcspn(line, "\r")] = 0;
-        char* f[7];
-        int n = 0;
-        for (char* p = line; n < 7; ) {
-            f[n++] = p;
-            char* tab = strchr(p, '\t');
-            if (!tab) break;
-            *tab = 0;
-            p = tab + 1;
-        }
-        if (n < 7 || strcmp(f[0], "trophy") != 0) continue;
-        Trophy* t = &g_trophies[g_trophy_n++];
-        t->id = atoi(f[1]);
-        snprintf(t->set, sizeof(t->set), "%s", f[2]);
-        snprintf(t->grade, sizeof(t->grade), "%s", f[3]);
-        snprintf(t->name, sizeof(t->name), "%s", f[4]);
-        snprintf(t->text, sizeof(t->text), "%s", f[5]);
-        t->when = _atoi64(f[6]);
-    }
-    g_trophy_tick = GetTickCount();
-    trophies_fill();
-    status("Trophies updated.");
-}
-
-static void build_trophies_page(HWND page) {
-    HWND summary = w_label(page, ID_TROPHY_SUMMARY, "", 10, 8, PAGE_W - 24);
-    SetWindowPos(summary, NULL, S(10), S(8), S(PAGE_W - 24), S(30), SWP_NOZORDER);
-    w_label(page, 0, "Show:", 10, 46, 40);
-    static const char* shown[] = {"All", "Earned", "Locked"};
-    HWND combo = w_combo(page, ID_TROPHY_FILTER, 52, 42, 110, shown, 3);
-    SendMessageA(combo, CB_SETCURSEL, 0, 0);
-    w_button(page, ID_TROPHY_REFRESH, "Refresh", PAGE_W - 6 - 74, 41, 74, 23);
-    HWND lv = CreateWindowExA(WS_EX_CLIENTEDGE, WC_LISTVIEWA, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                              LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, S(6), S(70),
-                              S(PAGE_W - 12), S(196), page, (HMENU)(INT_PTR)ID_TROPHY_LIST, NULL, NULL);
-    HWND detail = w_label(page, ID_TROPHY_DETAIL, "", 10, 272, PAGE_W - 24);
-    SetWindowPos(detail, NULL, S(10), S(272), S(PAGE_W - 24), S(30), SWP_NOZORDER);
-    SendMessageA(lv, WM_SETFONT, (WPARAM)g_font, 1);
-    ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
-    static const char* heads[] = {"Trophy", "Grade", "Earned", "Description"};
-    static const int widths[] = {150, 78, 78, 560};
-    for (int i = 0; i < 4; ++i) {
-        LVCOLUMNA col = {.mask = LVCF_TEXT | LVCF_WIDTH, .pszText = (char*)heads[i], .cx = S(widths[i])};
-        SendMessageA(lv, LVM_INSERTCOLUMNA, (WPARAM)i, (LPARAM)&col);
-    }
 }
 
 /* --- Log tab: the tail of the game's output (launcher-run.log), refreshed while shown --- */
@@ -2710,6 +2654,11 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_UPDATE_CHECK) update_check(1);
         else if (id == ID_OL_SIGNIN) on_online_signin();
         else if (id == ID_OL_COPY) on_online_copy_code();
+        else if (id == ID_OL_SIGNOUT) on_online_signout();
+        else if (id == ID_CO_SETUP) coop_job("setup");
+        else if (id == ID_CO_HOST) coop_job("host");
+        else if (id == ID_CO_STOP) coop_job("stop");
+        else if (id == ID_CO_COPY) on_coop_copy();
         else if (id == ID_OL_TEST) on_online_test();
         else if (id == ID_SHORTCUT) on_shortcut();
         else if (id == ID_CLEAR_CACHE) on_clear_cache();
@@ -2717,10 +2666,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_PORT_FOLDER) ShellExecuteA(g_main, "open", g_root, NULL, NULL, SW_SHOWNORMAL);
         else if (id == ID_FSR4_DOWNLOAD) on_fsr4_download();
         else if (id == ID_CTL_SET) on_ctl_set();
-        else if (id == ID_CTL_CLEAR) on_ctl_clear();
-        else if (id == ID_MOUSE_ON || id == ID_MOUSE_RIGHT || id == ID_MOUSE_LEFT) g_mouse_edited = 1;
-        else if (id == ID_TROPHY_REFRESH) trophies_refresh();
-        else if (id == ID_TROPHY_FILTER && HIWORD(wp) == CBN_SELCHANGE) trophies_fill();
+        else if (id == ID_CTL_CLEAR_KEY) on_ctl_clear(0);
+        else if (id == ID_CTL_CLEAR_MOUSE) on_ctl_clear(1);
         else if (id == ID_LOG_COPY) log_copy();
         else if (id == ID_LOG_CLEAR) log_clear();
         else if (id == ID_LOG_OPEN) on_open(2);
@@ -2734,7 +2681,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         } else if (id >= ID_FIELD_BASE && id < ID_FIELD_BASE + NFIELDS) {
             const Field* f = &g_fields[id - ID_FIELD_BASE];
             if (f->kind == K_CHECK && HIWORD(wp) == BN_CLICKED) exclusive_cheats(id);
-            if (!strcmp(f->key, "online_pool") && HIWORD(wp) == CBN_SELCHANGE) online_apply_pool();
+            if (!strcmp(f->key, "play_mode") && HIWORD(wp) == CBN_SELCHANGE) online_apply_pool();
             if (f->kind == K_FOLDER && !strcmp(f->key, "game_dir") && HIWORD(wp) == EN_CHANGE)
                 refresh_game_note();
         }
@@ -2771,12 +2718,17 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         MessageBoxA(g_main, (const char*)lp, "Bloodborne", MB_OK | MB_ICONERROR);
         return 0;
     case WM_ONLINE_LINE:
-        on_online_line((char*)lp);
+        if ((int)wp == JOB_SIGNIN) on_signin_line((char*)lp);
+        else on_coop_line((char*)lp);
         free((char*)lp);
         return 0;
     case WM_ONLINE_DONE:
-        g_signing = 0;
-        EnableWindow(ol(ID_OL_SIGNIN), TRUE);
+        if ((int)wp == JOB_SIGNIN) {
+            g_signing = 0;
+            EnableWindow(ol(ID_OL_SIGNIN), TRUE);
+        } else {
+            on_coop_done((int)wp);
+        }
         return 0;
     case WM_ONLINE_CHECK:
         on_online_check_done((char*)lp);
@@ -2794,17 +2746,6 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if (wp == LOG_TIMER && w == g_main && TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
         break;
     case WM_HSCROLL: {
-        if ((HWND)lp == GetDlgItem(g_pages[PG_CONTROLS], ID_MOUSE_SPEED) ||
-            (HWND)lp == GetDlgItem(g_pages[PG_CONTROLS], ID_MOUSE_OFFSET)) {
-            ctl_read_sliders();
-            char v[16];
-            snprintf(v, sizeof(v), "%.2f", g_mouse_speed);
-            SetWindowTextA(GetDlgItem(g_pages[PG_CONTROLS], ID_MOUSE_SPEED_VAL), v);
-            snprintf(v, sizeof(v), "%.2f", g_mouse_offset);
-            SetWindowTextA(GetDlgItem(g_pages[PG_CONTROLS], ID_MOUSE_OFFSET_VAL), v);
-            g_mouse_edited = 1;
-            break;
-        }
         for (int i = 0; i < NFIELDS; ++i) {
             if (g_fields[i].kind == K_SLIDER && g_fields[i].hwnd == (HWND)lp) {
                 char v[16];
@@ -2817,28 +2758,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     case WM_NOTIFY: {
         NMHDR* n = (NMHDR*)lp;
         if (n->idFrom == ID_CTL_LIST && n->code == NM_DBLCLK) on_ctl_set();
-        if (n->idFrom == ID_TROPHY_LIST && n->code == LVN_ITEMCHANGED) {
-            const NMLISTVIEW* nm = (const NMLISTVIEW*)lp;
-            if ((nm->uNewState & LVIS_SELECTED) && !(nm->uOldState & LVIS_SELECTED)) {
-                LVITEMA it = {.mask = LVIF_PARAM, .iItem = nm->iItem};
-                SendMessageA(n->hwndFrom, LVM_GETITEMA, 0, (LPARAM)&it);
-                if (it.lParam >= 0 && it.lParam < g_trophy_n) {
-                    char text[360];
-                    snprintf(text, sizeof(text), "%s: %s", g_trophies[it.lParam].name,
-                             g_trophies[it.lParam].text);
-                    SetWindowTextA(GetDlgItem(g_pages[PG_TROPHIES], ID_TROPHY_DETAIL), text);
-                }
-            }
-        }
         if (n->idFrom == ID_TABS && n->code == TCN_SELCHANGE) {
             show_page(TabCtrl_GetCurSel(g_tabs));
             if (TabCtrl_GetCurSel(g_tabs) == PG_GRAPHICS && !g_fsr4_known) fsr4_refresh();
             if (TabCtrl_GetCurSel(g_tabs) == PG_CONTROLS && !g_ctl_loaded) controls_refresh();
-            if (TabCtrl_GetCurSel(g_tabs) == PG_ONLINE) bridge_load();
+            if (TabCtrl_GetCurSel(g_tabs) == PG_ONLINE) online_refresh();
             if (TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
-            if (TabCtrl_GetCurSel(g_tabs) == PG_TROPHIES &&
-                (!g_trophy_n || GetTickCount() - g_trophy_tick > 5000))
-                trophies_refresh();
         }
         break;
     }
@@ -2850,6 +2775,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                 int answer = MessageBoxA(g_main, "Save your changes before closing?", "Bloodborne",
                                          MB_YESNOCANCEL | MB_ICONQUESTION);
                 if (answer == IDCANCEL || (answer == IDYES && !save_fields())) return 0;
+            }
+            if (g_co_hosting && !g_running) {
+                char cmd[4 * MAX_PATH];
+                static char out[512];
+                helper_command("launcher_coop.py", "stop", cmd, sizeof(cmd));
+                run_capture_ms(cmd, out, sizeof(out), 15000);
             }
             DestroyWindow(w);
         }
@@ -2910,10 +2841,8 @@ static void build_ui(void) {
             w_label(g_pages[i], 0, "For a black screen at start.", 138, end + 77, 250);
         } else if (i == PG_LOG) {
             build_log_page(g_pages[i]);
-        } else if (i == PG_TROPHIES) {
-            build_trophies_page(g_pages[i]);
         } else if (i == PG_CONTROLS) {
-            build_controls_page(g_pages[i]);
+            build_page(i, build_controls_top(g_pages[i]));
         } else if (i == PG_ONLINE) {
             build_page(i, 8);
             build_online_extras(g_pages[i]);
@@ -3008,8 +2937,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             if (sel == PG_LOG) log_reload(0);
             if (sel == PG_GRAPHICS) fsr4_refresh();
             if (sel == PG_CONTROLS) controls_refresh();
-            if (sel == PG_ONLINE) bridge_load();
-            if (sel == PG_TROPHIES) trophies_refresh();
+            if (sel == PG_ONLINE) online_refresh();
         }
     }
     SetTimer(g_main, LOG_TIMER, 1500, NULL);
