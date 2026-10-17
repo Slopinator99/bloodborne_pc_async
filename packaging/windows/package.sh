@@ -37,7 +37,7 @@ fi
 "$venv/Scripts/python.exe" -m pip install -q --disable-pip-version-check pyinstaller certifi
 # The scripts run inside bb-runtime.exe (--script): the standard modules they import come along.
 hidden=()
-for module in argparse base64 bisect collections contextlib hashlib json re shutil struct tempfile \
+for module in argparse base64 bisect collections contextlib hashlib json re secrets shutil socket struct tempfile \
               xml.etree.ElementTree urllib.request ctypes.wintypes certifi; do
     hidden+=(--hidden-import "$module")
 done

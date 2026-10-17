@@ -122,14 +122,17 @@ Data
 - Generated files (prepared game image, patches): out\.
 
 Online play (beta)
-- Create a shadNet account at https://shadps4.net/shadnet/register/ (no Discord
-  required). In the launcher open "Online", tick "Play online", enter the account
-  name (not the email) and password, then PLAY and choose online at the title screen.
-  "Test connection" checks server reachability; it does not verify account sign-in.
-  The Hunter's Dream website account is separate and optional for gameplay.
-- Messages, bloodstains and ghosts come from The Hunter's Dream (https://thehuntersdream.com);
-  bells and summons go through the shadNet server. Everyone needs game version 1.09 and the
-  same co-op server. Summoning between players is not confirmed yet.
+- In the launcher's Online tab choose a play mode, then press PLAY:
+  Offline: your own world, no servers (the default).
+  The Hunter's Dream: "Sign in with Discord" gives a code to approve in the page that opens;
+  messages, bloodstains, ghosts and summons then go through The Hunter's Dream
+  (https://thehuntersdream.com). "Test connection" checks that its servers answer.
+  Seamless co-op (BBSC): "Set up co-op" downloads BBSC (checked against its published SHA-256)
+  and adds firewall rules for Tailscale and your home network (one Windows prompt). Choose a
+  co-op name and password, then either "Start hosting" and send the invite code to your
+  friends, or paste a host's invite code. Hosts and guests should be on the same Tailscale
+  network. Your saves are copied to user\coop-backups before every co-op session.
+- Everyone needs game version 1.09.
 
 PC enhancements
 - In the launcher's Mods page, Hunter's Dream Mirror, Two Invaders, and Rebirth at the
