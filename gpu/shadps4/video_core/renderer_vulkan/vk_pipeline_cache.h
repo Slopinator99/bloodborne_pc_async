@@ -254,7 +254,10 @@ private:
     std::mutex async_queue_mutex;
     std::condition_variable async_queue_cv;
     std::queue<AsyncJob> async_queue;
-    std::thread async_thread;
+    std::vector<std::thread> async_threads;
+    std::condition_variable async_done_cv; ///< with pipelines_mutex: a pipeline was inserted
+    bool async_compute = false;            ///< BB_ASYNC_COMPUTE=1: compute pipelines go async too
+    u64 async_waited = 0;                  ///< draws that waited for a pipeline they needed now
     std::atomic<bool> async_stop{false};
     bool async_enabled = false;
     // Cumulative jobs; pending = enqueued - finished.
