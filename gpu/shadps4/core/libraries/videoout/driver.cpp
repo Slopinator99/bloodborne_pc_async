@@ -472,7 +472,7 @@ void VideoOutDriver::Flip(const Request& req) {
                         frames ? double(BbStats::scene_draws.exchange(0)) / frames : 0.0);
             if (sync_reason[0] + sync_reason[1] + sync_reason[2] + sync_reason[3] + sync_reason[4] != 0) {
                 std::printf("Async: pipelines compiled on the GPU thread anyway: %llu loading screen, %llu new pass, "
-                            "%llu other, %llu needed while pending, %llu compute\n",
+                            "%llu without dynamic vertex input, %llu needed while pending, %llu compute\n",
                             static_cast<unsigned long long>(sync_reason[0]),
                             static_cast<unsigned long long>(sync_reason[1]),
                             static_cast<unsigned long long>(sync_reason[2]),

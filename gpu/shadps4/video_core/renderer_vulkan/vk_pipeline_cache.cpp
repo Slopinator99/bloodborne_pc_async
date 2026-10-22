@@ -387,8 +387,8 @@ std::atomic<u64> g_bb_async_enqueued;
 std::atomic<u64> g_bb_async_finished;
 std::atomic<u64> g_bb_async_skipped;
 // With async on: pipelines compiled on the GPU thread, by why they could not go to a worker:
-// loading screen (frames under 300 draws), a pass not drawn for 8 frames in a row yet, another
-// reason (no dynamic vertex input, motion vectors), a draw that needed a pending one, compute.
+// loading screen (frames under 300 draws), a pass not drawn for 8 frames in a row yet, no dynamic
+// vertex input, a draw that needed a pending one, compute (at once unless BB_ASYNC_COMPUTE=1).
 std::atomic<u64> g_bb_sync_reason[5];
 namespace {
 struct CompileTimer {
@@ -657,9 +657,12 @@ void NoteDrawTarget(const AmdGpu::Regs& regs) {
 
 bool AsyncSkippable(const Instance& instance, const AmdGpu::Regs* regs, bool motion, u32& reason) {
     reason = 2;
-    // Not a draw whose pipeline depends on its vertex buffers (no dynamic vertex input), and not
-    // a motion-vector pipeline: its output feeds the upscaler's history.
-    if (!instance.IsVertexInputDynamicState() || !regs || motion) {
+    // Not a draw whose pipeline depends on its vertex buffers (no dynamic vertex input). A
+    // motion-vector pipeline may skip too: a frame or two without the motion of a new object
+    // costs a faint smear in TAA, where compiling it at once costs a hitch (with object motion
+    // on, every pipeline has a motion twin).
+    (void)motion;
+    if (!instance.IsVertexInputDynamicState() || !regs) {
         return false;
     }
     // Loading screens (a frame of fewer than 300 draws before this one) compile at once.
@@ -821,9 +824,6 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     }
     // Debug shader-replace mode mutates the maps; keep it fully synchronous.
     const bool collect = EmulatorSettings.IsShaderCollect();
-    if (async_enabled && !async_compute && !collect) {
-        ++g_bb_sync_reason[4];
-    }
     if (async_enabled && async_compute && !collect) {
         std::scoped_lock lk{pipelines_mutex};
         auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
@@ -862,6 +862,9 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
         return compute_pipelines.try_emplace(compute_key);
     }();
     if (is_new) {
+        if (async_enabled && !async_compute && !collect) {
+            ++g_bb_sync_reason[4];
+        }
         const auto pipeline_hash = std::hash<ComputePipelineKey>{}(compute_key);
         LOG_INFO(Render_Vulkan, "Compiling compute pipeline {:#x}", pipeline_hash);
         CompileTimer timer;
