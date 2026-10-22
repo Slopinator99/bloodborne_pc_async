@@ -172,9 +172,14 @@ static bool ExecuteCopyShaderHLE(const Shader::Info& info, const AmdGpu::Compute
     // result is bit-identical, but region tables shrink and more batches fall below the 8-copy
     // vkCmdCopyBuffer path in MultiCopy. Only merged when the joined span cannot alias itself
     // (source and destination disjoint), so overlapping copies keep sequential semantics.
+    // BB_COPY_NO_MERGE=1: no merging (a test switch).
+    static const bool no_merge = [] {
+        const char* env = std::getenv("BB_COPY_NO_MERGE");
+        return env && env[0] == '1';
+    }();
     size_t compacted = 0;
     for (size_t i = 0; i < copies.size(); ++i) {
-        if (compacted > 0) {
+        if (compacted > 0 && !no_merge) {
             auto& prev = copies[compacted - 1];
             const auto& cur = copies[i];
             const bool contiguous = prev.srcOffset + prev.size == cur.srcOffset &&

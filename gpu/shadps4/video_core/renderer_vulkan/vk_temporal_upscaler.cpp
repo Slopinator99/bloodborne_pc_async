@@ -1102,6 +1102,19 @@ void TemporalUpscaler::Run() {
     if (BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
         RecordTaa(cmdbuf, input_color_view, input_depth_view);
         dispatched = true;
+        // BB_DUMP_TRIGGER, as on the scaled path below: the scene color TAA reads, its depth
+        // and motion, and its output (to look at the edge rows of a jittered frame).
+        if (const int dump = DumpFrame(); dump >= 0) {
+            const u32 color_bytes = color.info.pixel_format == vk::Format::eR16G16B16A16Sfloat ? 8 : 4;
+            const char* color_format =
+                color_bytes == 8 ? "rgba16f" : "rgba8";
+            DumpImages(instance, scheduler, cmdbuf, dump,
+                       {{input_color, w, h, color_bytes, "input", color_format},
+                        {vk::Image(motion_image), w, h, 4, "motion", "rg16f"},
+                        {vk::Image(output_image), ow, oh, 8, "output", "rgba16f"}});
+            DumpImages(instance, scheduler, cmdbuf, dump,
+                       {{input_depth, w, h, 4, "depth", "f32", vk::ImageAspectFlagBits::eDepth}});
+        }
     } else if (UseFsr4()) {
         dispatched = RecordFsr4(cmdbuf, {input_color, input_color_view, w, h},
                                 {input_depth, input_depth_view, w, h}, w, h, ow, oh, frame_ms);

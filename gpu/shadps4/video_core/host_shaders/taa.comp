@@ -19,14 +19,23 @@ layout(push_constant) uniform Params {
     vec4 previous_z;
 };
 
+// The outer ring of pixels of the scene inputs (color, depth, motion) is read from the pixel
+// just inside it. The scene is drawn with its geometry shifted by the sub-pixel jitter, and in
+// some jitter phases nothing covers the last row (or column): it keeps the clear value (a bright
+// row at depth 1.0, shimmering with the jitter cycle) which the history would take over. One
+// pixel at the screen edge is not worth that.
+ivec2 guardEdge(ivec2 q, ivec2 size) {
+    return clamp(q, min(ivec2(1), size - 1), max(size - 2, ivec2(0)));
+}
+
 vec4 fetchLinear(sampler2D tex, vec2 position) {
     ivec2 p = ivec2(floor(position));
     vec2 f = fract(position);
-    ivec2 bound = textureSize(tex, 0) - 1;
-    return mix(mix(texelFetch(tex, clamp(p, ivec2(0), bound), 0),
-                   texelFetch(tex, clamp(p + ivec2(1,0), ivec2(0), bound), 0), f.x),
-               mix(texelFetch(tex, clamp(p + ivec2(0,1), ivec2(0), bound), 0),
-                   texelFetch(tex, clamp(p + ivec2(1,1), ivec2(0), bound), 0), f.x), f.y);
+    ivec2 size = textureSize(tex, 0);
+    return mix(mix(texelFetch(tex, guardEdge(p, size), 0),
+                   texelFetch(tex, guardEdge(p + ivec2(1,0), size), 0), f.x),
+               mix(texelFetch(tex, guardEdge(p + ivec2(0,1), size), 0),
+                   texelFetch(tex, guardEdge(p + ivec2(1,1), size), 0), f.x), f.y);
 }
 
 // Compare depths in the SAME camera, with tolerance proportional to view distance.
@@ -45,8 +54,8 @@ float expectedPreviousDepth(float depth, vec2 source, ivec2 size) {
 // as Halton changes, even with a stationary camera. Use the smaller one-sided slope
 // to avoid extrapolating across a silhouette or a foreground/background discontinuity.
 float depthSlope(float depth, ivec2 source, ivec2 axis, ivec2 size) {
-    float left = depth - texelFetch(depth_tex, clamp(source - axis, ivec2(0), size-1), 0).r;
-    float right = texelFetch(depth_tex, clamp(source + axis, ivec2(0), size-1), 0).r - depth;
+    float left = depth - texelFetch(depth_tex, guardEdge(source - axis, size), 0).r;
+    float right = texelFetch(depth_tex, guardEdge(source + axis, size), 0).r - depth;
     float slope = abs(left) < abs(right) ? left : right;
     return abs(slope) <= max(2e-7, abs(proj.z-depth)*0.1) ? slope : 0.0;
 }
@@ -78,7 +87,7 @@ void main() {
     if (any(greaterThanEqual(p, size))) return;
     const uint diag = pad & 0xffu, variant = pad >> 8;
     vec2 current_pos = vec2(p) + jitter;
-    ivec2 color_source = clamp(ivec2(floor(current_pos + 0.5)), ivec2(0), size - 1);
+    ivec2 color_source = guardEdge(ivec2(floor(current_pos + 0.5)), size);
     ivec2 source = color_source;
     // Neighbourhood of the current pixel: the RGB min/max box (history clamp), and for the
     // optional techniques below its tonemapped YCoCg box, moments and a jitter-aware 3x3
@@ -89,7 +98,7 @@ void main() {
     float filter_weight = 0.0;
     for (int y = -1; y <= 1; ++y)
         for (int x = -1; x <= 1; ++x) {
-            ivec2 q = clamp(color_source + ivec2(x,y), ivec2(0), size - 1);
+            ivec2 q = guardEdge(color_source + ivec2(x,y), size);
             vec3 c = texelFetch(color_tex, q, 0).rgb;
             if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
             rgb_lo = min(rgb_lo, c);
@@ -116,7 +125,7 @@ void main() {
     // alternate with background under jitter; a 3x3 nearest surface remains trackable.
     for (int y = -1; y <= 1; ++y)
         for (int x = -1; x <= 1; ++x) {
-            ivec2 candidate = clamp(color_source+ivec2(x,y),ivec2(0),size-1);
+            ivec2 candidate = guardEdge(color_source+ivec2(x,y), size);
             float candidate_depth = texelFetch(depth_tex,candidate,0).r;
             if (candidate_depth < depth) {
                 depth = candidate_depth;
