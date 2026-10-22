@@ -127,6 +127,8 @@ icons in the game's menus, a debug menu without extra files, Brazilian Portugues
 confirm (Supermedo #20, #17), a performance overlay and idle cursor hiding, data-field mods and
 gameplay plugins, the mirror's character preview.
 
+Watching: **AnyPS5**. Revisit it once it can run PS4 games; until then there is nothing to do.
+
 ## Not planned
 
 - **deadinside28's GPU memory model (0.5)** and the Windows sync built on it (deadinside28
