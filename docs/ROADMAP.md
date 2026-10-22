@@ -127,7 +127,12 @@ icons in the game's menus, a debug menu without extra files, Brazilian Portugues
 confirm (Supermedo #20, #17), a performance overlay and idle cursor hiding, data-field mods and
 gameplay plugins, the mirror's character preview.
 
-Watching: **AnyPS5**. Revisit it once it can run PS4 games; until then there is nothing to do.
+Watching: **AnyPS5** (https://github.com/boykopovar/AnyPS5, GPL-2.0). It does not emulate: a
+relinker turns PS5 executables into native Linux and Windows programs that link against its own
+replacements of the system libraries, with a shader recompiler to SPIR-V. That is this port's
+own approach, so its libraries, shader work and game bring-up reports may be worth comparing
+with ours. It targets PS5 games only and says nothing of PS4 yet; revisit once it runs PS4
+games, and look at its system library coverage then.
 
 ## Not planned
 
