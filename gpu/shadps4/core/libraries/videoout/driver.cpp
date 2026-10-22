@@ -35,6 +35,7 @@ extern std::atomic<u32> g_bb_compiles;
 extern std::atomic<u64> g_bb_async_enqueued;
 extern std::atomic<u64> g_bb_async_finished;
 extern std::atomic<u64> g_bb_async_skipped;
+extern std::atomic<u64> g_bb_sync_reason[5];
 } // namespace Vulkan
 
 namespace Libraries::VideoOut {
@@ -430,6 +431,10 @@ void VideoOutDriver::Flip(const Request& req) {
             const u64 async_enq = Vulkan::g_bb_async_enqueued.exchange(0);
             const u64 async_fin = Vulkan::g_bb_async_finished.exchange(0);
             const u64 async_skip = Vulkan::g_bb_async_skipped.exchange(0);
+            u64 sync_reason[5];
+            for (int i = 0; i < 5; ++i) {
+                sync_reason[i] = Vulkan::g_bb_sync_reason[i].exchange(0);
+            }
             const u64 direct = Vulkan::Scheduler::direct_recordings.exchange(0);
             const u64 faults = BbStats::tracker_faults.exchange(0);
             // GPU command thread CPU time per draw: comparable between builds even when the scene
@@ -465,6 +470,15 @@ void VideoOutDriver::Flip(const Request& req) {
                         BbStats::tick_wait_ns.exchange(0) / (window * 1e7),
                         frames ? double(BbStats::reduced_draws.exchange(0)) / frames : 0.0,
                         frames ? double(BbStats::scene_draws.exchange(0)) / frames : 0.0);
+            if (sync_reason[0] + sync_reason[1] + sync_reason[2] + sync_reason[3] + sync_reason[4] != 0) {
+                std::printf("Async: pipelines compiled on the GPU thread anyway: %llu loading screen, %llu new pass, "
+                            "%llu other, %llu needed while pending, %llu compute\n",
+                            static_cast<unsigned long long>(sync_reason[0]),
+                            static_cast<unsigned long long>(sync_reason[1]),
+                            static_cast<unsigned long long>(sync_reason[2]),
+                            static_cast<unsigned long long>(sync_reason[3]),
+                            static_cast<unsigned long long>(sync_reason[4]));
+            }
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
             if (intervals.size() > 2) {
                 std::vector<double> sorted = intervals;

@@ -386,6 +386,10 @@ std::atomic<u32> g_bb_async_compiles;
 std::atomic<u64> g_bb_async_enqueued;
 std::atomic<u64> g_bb_async_finished;
 std::atomic<u64> g_bb_async_skipped;
+// With async on: pipelines compiled on the GPU thread, by why they could not go to a worker:
+// loading screen (frames under 300 draws), a pass not drawn for 8 frames in a row yet, another
+// reason (no dynamic vertex input, motion vectors), a draw that needed a pending one, compute.
+std::atomic<u64> g_bb_sync_reason[5];
 namespace {
 struct CompileTimer {
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -651,7 +655,8 @@ void NoteDrawTarget(const AmdGpu::Regs& regs) {
     }
 }
 
-bool AsyncSkippable(const Instance& instance, const AmdGpu::Regs* regs, bool motion) {
+bool AsyncSkippable(const Instance& instance, const AmdGpu::Regs* regs, bool motion, u32& reason) {
+    reason = 2;
     // Not a draw whose pipeline depends on its vertex buffers (no dynamic vertex input), and not
     // a motion-vector pipeline: its output feeds the upscaler's history.
     if (!instance.IsVertexInputDynamicState() || !regs || motion) {
@@ -667,8 +672,10 @@ bool AsyncSkippable(const Instance& instance, const AmdGpu::Regs* regs, bool mot
         frame_seen = frame;
     }
     if (last_frame_draws < 300) {
+        reason = 0;
         return false;
     }
+    reason = 1;
     constexpr u32 PerFrameStreak = 8;
     const u64 target = DrawTarget(*regs);
     const auto streak = g_target_streaks.find(target);
@@ -705,7 +712,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         // compiles off-thread and this draw is skipped (callers already handle null); a pending
         // key misses again without re-enqueueing and a finished one hits. Any other draw needs
         // its pipeline now: it waits for a pending one and compiles a new one right here.
-        const bool skippable = AsyncSkippable(instance, sel.regs, sel.motion);
+        u32 sync_reason = 2;
+        const bool skippable = AsyncSkippable(instance, sel.regs, sel.motion, sync_reason);
         std::unique_lock lk{pipelines_mutex};
         auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
         bool compile_here = false;
@@ -718,6 +726,9 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             // holds locks the worker may need.
             graphics_pipelines.erase(it);
             compile_here = true;
+            ++g_bb_sync_reason[3];
+        } else if (!skippable) {
+            ++g_bb_sync_reason[sync_reason];
         }
         if (!compile_here && skippable) {
         AsyncGraphicsJob job{
@@ -810,6 +821,9 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     }
     // Debug shader-replace mode mutates the maps; keep it fully synchronous.
     const bool collect = EmulatorSettings.IsShaderCollect();
+    if (async_enabled && !async_compute && !collect) {
+        ++g_bb_sync_reason[4];
+    }
     if (async_enabled && async_compute && !collect) {
         std::scoped_lock lk{pipelines_mutex};
         auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
