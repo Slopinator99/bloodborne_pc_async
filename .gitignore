@@ -42,3 +42,6 @@ patches.json
 /README-TRANSFER.txt
 /user-*/
 /*.log
+
+# written by the launcher next to the game (key bindings)
+/input.ini
