@@ -17,7 +17,7 @@ KNOWN_DIFFERENCES = {
     ('ST_INI', 'output_res'): ('1920x1080', '2560x1440'),
     ('ST_INI', 'skip_intro'): ('1', '0'),
     ('ST_INI', 'effect_game_aa'): ('0', '1'),
-    ('ST_APP', 'fps_mode'): ('60', 'uncap'),
+    ('ST_APP', 'fps_mode'): ('60', '120'),
     ('ST_APP', 'play_mode'): ('offline', ''),  # the Python launcher derives it from older settings
 }
 
