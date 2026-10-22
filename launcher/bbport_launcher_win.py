@@ -2740,19 +2740,6 @@ def main():
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # sharp text on scaled displays
     except (AttributeError, OSError):
         pass
-    if '--classic-launcher' not in args:
-        try:
-            from bbport_launcher_qml import run_ui
-        except ImportError as error:
-            import traceback
-            try:
-                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-                (CONFIG_DIR / 'launcher-startup.log').write_text(traceback.format_exc(), encoding='utf-8')
-            except OSError:
-                pass
-            print(f'Qt Quick unavailable; opening classic launcher: {error}', file=sys.stderr)
-        else:
-            sys.exit(run_ui(bbport_startup.route(settings, args, DATA_DIR, keys_held)))
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
     root = tk.Tk()
