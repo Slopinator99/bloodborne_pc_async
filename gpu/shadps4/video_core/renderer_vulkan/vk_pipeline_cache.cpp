@@ -433,11 +433,10 @@ struct AsyncCompileTimer {
 } // namespace
 
 void PipelineCache::StartAsyncThread() {
-    // BB_ASYNC_PIPELINE_THREADS: the workers (default a quarter of the CPU threads, 1-4). The
-    // driver compile is the slow part; VkPipelineCache is internally synchronized.
+    // BB_ASYNC_PIPELINE_THREADS: the workers (default 1; the driver compile itself runs under
+    // pipeline_create_mutex, so more workers only overlap the rest of a job).
     const char* env = std::getenv("BB_ASYNC_PIPELINE_THREADS");
-    u32 threads = env && *env ? u32(std::strtoul(env, nullptr, 10))
-                              : std::clamp(std::thread::hardware_concurrency() / 4, 1u, 4u);
+    u32 threads = env && *env ? u32(std::strtoul(env, nullptr, 10)) : 1u;
     threads = std::max(threads, 1u);
     for (u32 i = 0; i < threads; ++i) {
         async_threads.emplace_back([this] { AsyncLoop(); });
@@ -507,6 +506,8 @@ void PipelineCache::CompileAsyncGraphics(AsyncGraphicsJob job) {
     GraphicsPipeline::SerializationSupport sdata{};
     auto pipeline = [&] {
         AsyncCompileTimer timer;
+        // The VkPipelineCache object needs external sync across threads.
+        std::scoped_lock lk{pipeline_create_mutex};
         return std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, job.key, *pipeline_cache,
             std::span<const Shader::Info*, MaxShaderStages>{job.infos},
@@ -536,6 +537,7 @@ void PipelineCache::CompileAsyncCompute(AsyncComputeJob job) {
     ComputePipeline::SerializationSupport sdata{};
     auto pipeline = [&] {
         AsyncCompileTimer timer;
+        std::scoped_lock lk{pipeline_create_mutex};
         return std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
                                                  *pipeline_cache, job.key, *job.info,
                                                  job.module, sdata, false);
@@ -706,24 +708,18 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         const bool skippable = AsyncSkippable(instance, sel.regs, sel.motion);
         std::unique_lock lk{pipelines_mutex};
         auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
+        bool compile_here = false;
         if (!is_new) {
             if (it->second || skippable) {
                 return it->second.get();
             }
-            const auto key = sel.graphics_key;
-            const auto start = std::chrono::steady_clock::now();
-            async_done_cv.wait(lk, [&] {
-                const auto found = graphics_pipelines.find(key);
-                return found == graphics_pipelines.end() || found->second;
-            });
-            g_bb_compile_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                       std::chrono::steady_clock::now() - start)
-                                       .count());
-            ++async_waited;
-            const auto found = graphics_pipelines.find(key);
-            return found != graphics_pipelines.end() ? found->second.get() : nullptr;
+            // Pending, and needed now: this thread compiles its own copy below and the
+            // worker's is dropped when it finishes. Never wait for a worker: the GPU thread
+            // holds locks the worker may need.
+            graphics_pipelines.erase(it);
+            compile_here = true;
         }
-        if (skippable) {
+        if (!compile_here && skippable) {
         AsyncGraphicsJob job{
             .key = sel.graphics_key,
             .hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key),
@@ -760,7 +756,9 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                     (unsigned long long)enqueued_hash);
         return nullptr;
         }
-        graphics_pipelines.erase(it); // compiled below, on this thread
+        if (!compile_here) {
+            graphics_pipelines.erase(it); // compiled below, on this thread
+        }
     }
     // Synchronous path (default): compile on the GPU thread.
     auto [it, is_new] = [&] {
