@@ -66,6 +66,8 @@
 #define ID_OL_TEST 5705
 #define ID_OL_RESULT 5706
 #define ID_OL_SIGNOUT 5707
+#define ID_AT_PREPARE 5720
+#define ID_AT_STATUS 5721
 #define ID_CO_STATUS 5710
 #define ID_CO_SETUP 5711
 #define ID_CO_HOST 5712
@@ -102,7 +104,7 @@
 #define LABEL_X 10
 #define LABEL_W 118
 #define CTRL_X 132
-#define CTRL_W 252
+#define CTRL_W 236
 #define ROW_H 25
 #define CHECK_H 18
 
@@ -114,18 +116,38 @@ static const char* kUpscalerL[] = {"DLSS (NVIDIA GeForce RTX)", "FSR 4 (best qua
 static const char* kPresetV[] = {"0", "1", "2", "3", "4"};
 static const char* kPresetL[] = {"Native AA (x1.0)", "Quality (x1.5)", "Balanced (x1.7)",
                                  "Performance (x2)", "Ultra Performance (x3)"};
-static const char* kOutputV[] = {"1280x720",  "1920x1080", "2560x1440", "3840x2160", "2560x1080",
-                                 "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440"};
-static const char* kOutputL[] = {"1280 x 720 (Steam Deck)", "1920 x 1080",        "2560 x 1440",
-                                 "3840 x 2160 (4K)",         "2560 x 1080 (21:9)", "3440 x 1440 (21:9)",
-                                 "3840 x 1600 (21:9)",       "5120 x 2160 (21:9)", "3840 x 1080 (32:9)",
-                                 "5120 x 1440 (32:9)"};
+static const char* kOutputV[] = {"1280x720", "1920x1080", "2560x1440", "3840x2160", "1280x800", "1920x1200", "2560x1080", "3440x1440", "5120x1440", "5120x2160", "3840x1600", "3840x1080", "1080x1920", "1024x768", "1280x960", "1440x1080", "1600x1200", "1920x1440"};
+static const char* kOutputL[] = {
+    "1280 \xc3""\x97"" 720 (Steam Deck)",
+    "1920 \xc3""\x97"" 1080",
+    "2560 \xc3""\x97"" 1440",
+    "3840 \xc3""\x97"" 2160 (4K)",
+    "1280 x 800 (16:10)",
+    "1920 \xc3""\x97"" 1200 (16:10)",
+    "2560 x 1080 (Ultrawide)",
+    "3440 x 1440 (Ultrawide)",
+    "5120 x 1440 (32:9)",
+    "5120 x 2160 (Ultrawide)",
+    "3840 x 1600 (Ultrawide)",
+    "3840 x 1080 (32:9)",
+    "1080 x 1920 (Portrait)",
+    "1024 x 768 (4:3)",
+    "1280 x 960 (4:3)",
+    "1440 x 1080 (4:3)",
+    "1600 x 1200 (4:3)",
+    "1920 x 1440 (4:3)"};
 static const char* kLiveV[] = {"auto", "0", "1"};
 static const char* kLiveL[] = {"Auto (by graphics card)", "Off (faster)", "On (change without restarting)"};
 static const char* kLodV[] = {"0", "-2", "1", "2"};
 static const char* kLodL[] = {"As in the game", "Highest (-2)", "Lower (1)", "Lowest (2)"};
-static const char* kFpsV[] = {"uncap", "60", "90", "30"};
-static const char* kFpsL[] = {"Unlocked (frame-time patch)", "60 FPS", "90 FPS", "30 FPS (as on PS4)"};
+static const char* kFpsV[] = {"120", "144", "90", "60", "uncap", "30"};
+static const char* kFpsL[] = {
+    "120 FPS (recommended)",
+    "144 FPS",
+    "90 FPS",
+    "60 FPS",
+    "Unlocked (can freeze at Vicar Amelia's intro)",
+    "30 FPS (as on PS4)"};
 static const char* kCapV[] = {"", "60", "90", "120", "144", "165", "240", "0"};
 static const char* kCapL[] = {"Auto: display refresh, max 120 (recommended)", "60", "90", "120",
                               "144 (risky)", "165 (risky)", "240 (risky)", "No limit (risky)"};
@@ -134,9 +156,29 @@ static const char* kAheadL[] = {"1 (default)", "2", "Unbounded"};
 static const char* kPresentV[] = {"Mailbox", "Fifo", "FifoRelaxed", "Immediate"};
 static const char* kPresentL[] = {"Mailbox (low latency, no tearing)", "FIFO (VSync)", "FIFO Relaxed",
                                   "Immediate (tearing)"};
-static const char* kLangV[] = {"1", "8", "0", "2", "3", "4", "5", "17"};
-static const char* kLangL[] = {"English", "Russian", "Japanese", "French", "Spanish", "German",
-                               "Italian", "Portugu\xc3\xaas (Brasil)"};
+static const char* kLangV[] = {"1", "8", "0", "2", "3", "4", "5", "17", "7", "20", "18", "6", "16", "19", "12", "13", "14", "15", "9", "10", "11"};
+static const char* kLangL[] = {
+    "English",
+    "Russian",
+    "Japanese",
+    "French",
+    "Spanish",
+    "German",
+    "Italian",
+    "Portuguese (Brazil)",
+    "Portuguese (Portugal)",
+    "Spanish (Latin America)",
+    "English (UK)",
+    "Dutch",
+    "Polish",
+    "Turkish",
+    "Finnish",
+    "Swedish",
+    "Danish",
+    "Norwegian",
+    "Korean",
+    "Chinese (Traditional)",
+    "Chinese (Simplified)"};
 static const char* kDrawPipeV[] = {"", "1", "0"};
 static const char* kDrawPipeL[] = {"Auto (8+ threads)", "On", "Off (more stable)"};
 static const char* kModeV[] = {"offline", "huntersdream", "coop"};
@@ -150,14 +192,58 @@ static const char* kVramV[] = {"", "2560", "3072", "4096", "5120", "6144", "8192
 static const char* kVramL[] = {"Automatic (recommended)", "2.5 GB", "3 GB", "4 GB", "5 GB", "6 GB", "8 GB"};
 static const char* kReadbackV[] = {"", "0", "2"};
 static const char* kReadbackL[] = {"Relaxed (default)", "Off", "Precise"};
+static const char* kFgV[] = {"off", "fsr3", "dlss"};
+static const char* kFgL[] = {
+    "Off",
+    "AMD FSR 3.1 (any GPU)",
+    "NVIDIA DLSS (GeForce RTX 40/50)"};
+static const char* kFgMulV[] = {"2", "3", "4"};
+static const char* kFgMulL[] = {
+    "2\xc3""\x97"" (one generated frame)",
+    "3\xc3""\x97"" (DLSS on GeForce RTX 50)",
+    "4\xc3""\x97"" (DLSS on GeForce RTX 50)"};
+static const char* kHudV[] = {"100", "75", "50", "25", "0"};
+static const char* kHudL[] = {
+    "Screen edges",
+    "75%",
+    "Halfway",
+    "25%",
+    "Centred (16:9)"};
+static const char* kFsModeV[] = {"borderless", "exclusive"};
+static const char* kFsModeL[] = {
+    "Borderless (default)",
+    "Exclusive"};
+static const char* kDispV[] = {"", "1", "2", "3", "4"};
+static const char* kDispL[] = {
+    "Primary monitor",
+    "Monitor 1",
+    "Monitor 2",
+    "Monitor 3",
+    "Monitor 4"};
+static const char* kVoiceV[] = {"auto", "eng", "ptb", "ded", "esa", "ese", "frf", "iti", "jaj"};
+static const char* kVoiceL[] = {
+    "As in the game",
+    "English",
+    "Portugu\xc3""\xaa""s (Brasil)",
+    "Deutsch",
+    "Espa\xc3""\xb1""ol (Am\xc3""\xa9""rica)",
+    "Espa\xc3""\xb1""ol (Espa\xc3""\xb1""a)",
+    "Fran\xc3""\xa7""ais",
+    "Italiano",
+    "\xe6""\x97""\xa5""\xe6""\x9c""\xac""\xe8""\xaa""\x9e"""};
+static const char* kNpcV[] = {"all", "new_dialogue", "hidden"};
+static const char* kNpcL[] = {
+    "All NPCs",
+    "Only NPCs with new dialogue",
+    "Hidden"};
 
 /* --- the field table --- */
 enum { K_HEAD, K_CHECK, K_COMBO, K_TEXT, K_FOLDER, K_SLIDER, K_LIST, K_PASSWORD, K_AREA, K_CUSTOM };
 enum { ST_INI, ST_APP };
-enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_ONLINE, PG_MODS, PG_CONTROLS, PG_ADV,
+enum { PG_PLAY, PG_GRAPHICS, PG_DISPLAY, PG_GAME, PG_CHEATS, PG_EXTRAS, PG_ONLINE, PG_MODS, PG_CONTROLS, PG_ADV,
        PG_LOG, PG_COUNT };
 static const char* kPageNames[PG_COUNT] = {"Play", "Graphics", "Display", "Game",
-                                           "Cheats", "Online", "Mods", "Controls", "Advanced",
+                                           "Cheats", "PC extras", "Online", "Mods", "Controls", "Advanced",
                                            "Log"};
 
 typedef struct {
@@ -208,6 +294,10 @@ static Field g_fields[] = {
     FLD_SLIDER(PG_GRAPHICS, ST_INI, "sharpness", "Sharpness:", "0.50"),
     FLD_CHECK(PG_GRAPHICS, ST_INI, "object_motion", "", "Object motion vectors (about 10% FPS)", "1"),
     FLD_COMBO(PG_GRAPHICS, ST_INI, "model_lod", "", "Model detail (LOD):", kLodV, kLodL, "0"),
+    FLD_HEAD(PG_GRAPHICS, "Frame generation"),
+    FLD_COMBO(PG_GRAPHICS, ST_INI, "frame_gen", "", "Frame generation:", kFgV, kFgL, "off"),
+    FLD_COMBO(PG_GRAPHICS, ST_INI, "frame_gen_multiplier", "", "Multiplier:", kFgMulV, kFgMulL, "2"),
+    FLD_CHECK(PG_GRAPHICS, ST_INI, "frame_gen_fit_display", "", "Fit to the display's refresh rate", "0"),
     /* Display */
     FLD_COMBO(PG_DISPLAY, ST_APP, "fps_mode", "launcher_fps", "Frame rate:", kFpsV, kFpsL, "60"),
     FLD_COMBO(PG_DISPLAY, ST_APP, "frame_cap", "launcher_cap", "Frame cap (unlocked):", kCapV, kCapL,
@@ -215,6 +305,10 @@ static Field g_fields[] = {
     FLD_COMBO(PG_DISPLAY, ST_APP, "frames_ahead", "launcher_ahead", "Frames ahead of the GPU:",
               kAheadV, kAheadL, ""),
     FLD_CHECK(PG_DISPLAY, ST_APP, "fullscreen", "launcher_fullscreen", "Run in full screen", "0"),
+    FLD_COMBO(PG_DISPLAY, ST_APP, "fullscreen_mode", "", "Fullscreen type:", kFsModeV, kFsModeL,
+              "borderless"),
+    FLD_COMBO(PG_DISPLAY, ST_APP, "display", "", "Monitor:", kDispV, kDispL, ""),
+    FLD_COMBO(PG_DISPLAY, ST_INI, "hud_position", "", "HUD position (ultrawide):", kHudV, kHudL, "100"),
     FLD_COMBO(PG_DISPLAY, ST_APP, "present_mode", "launcher_present", "Presentation:", kPresentV,
               kPresentL, "Mailbox"),
     FLD_CHECK(PG_DISPLAY, ST_APP, "hdr", "", "Allow HDR output", "0"),
@@ -223,6 +317,7 @@ static Field g_fields[] = {
     FLD_FOLDER(PG_GAME, ST_APP, "user_dir", "launcher_user_dir", "Saves folder:"),
     FLD_FOLDER(PG_GAME, ST_APP, "dlc_dir", "", "DLC folder:"),
     FLD_COMBO(PG_GAME, ST_APP, "language", "", "Text language:", kLangV, kLangL, "1"),
+    FLD_COMBO(PG_GAME, ST_APP, "voice_language", "", "Voice language:", kVoiceV, kVoiceL, "auto"),
     FLD_TEXT(PG_GAME, ST_APP, "player_name", "Player name:", ""),
     FLD_HEAD(PG_GAME, "Effects"),
     FLD_CHECK(PG_GAME, ST_INI, "effect_chromatic_aberration", "", "Chromatic aberration", "1"),
@@ -242,17 +337,37 @@ static Field g_fields[] = {
     FLD_CHECK(PG_CHEATS, ST_INI, "cheat_silent", "", "Enemies do not hear you", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "cheat_rally_no_decay", "", "Rally never fades", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "cheat_enemy_control", "", "Control the targeted enemy (R3)", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "cheat_no_stamina", "", "No stamina use", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "cheat_stamina_out_of_combat", "",
+              "No stamina use out of combat (8 s after a hit)", "0"),
     FLD_HEAD(PG_CHEATS, "Gameplay tweaks"),
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_no_rally", "", "No Rally (hits do not give health back)", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_camera_distance", "", "Camera further from the character", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_no_camera_rotation", "", "No camera auto-rotation while moving", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_easy_run", "", "Run with less stick tilt (about 70%)", "0"),
+    FLD_CHECK(PG_CHEATS, ST_INI, "tweak_circle_confirm", "",
+              "Japanese buttons: Circle confirms, Cross dodges", "0"),
     FLD_CHECK(PG_CHEATS, ST_INI, "tweak_ragdoll", "", "Dark Souls-style ragdoll physics", "0"),
+    /* PC extras: Hunter's Atlas and the PC enhancements */
+    FLD_HEAD(PG_EXTRAS, "Hunter's Atlas (full-screen map)"),
+    FLD_CHECK(PG_EXTRAS, ST_INI, "atlas_enabled", "", "Full-screen map (Map in the game's quick menu)", "0"),
+    FLD_CHECK(PG_EXTRAS, ST_INI, "atlas_travel", "", "Fast travel to discovered lamps from the map", "0"),
+    FLD_CHECK(PG_EXTRAS, ST_INI, "atlas_fog", "", "Reveal an area's map only after its boss", "0"),
+    FLD_CHECK(PG_EXTRAS, ST_INI, "atlas_items", "", "Pickup markers (vials, Insight, equipment)", "0"),
+    FLD_COMBO(PG_EXTRAS, ST_INI, "atlas_npc_mode", "", "NPC markers:", kNpcV, kNpcL, "all"),
+    FLD_CUSTOM(PG_EXTRAS, "atlas_custom", 34),
+    FLD_HEAD(PG_EXTRAS, "PC enhancements (made from your game at start)"),
+    FLD_CHECK(PG_EXTRAS, ST_INI, "pc_mirror_appearance", "", "Hunter's Dream mirror: change appearance", "0"),
+    FLD_CHECK(PG_EXTRAS, ST_INI, "pc_two_invaders", "", "Two invaders in the late areas (all players)", "0"),
+    FLD_CHECK(PG_EXTRAS, ST_INI, "pc_rebirth", "", "Rebirth at the Altar of Despair", "0"),
+    FLD_CHECK(PG_EXTRAS, ST_INI, "pc_enhanced_lamps", "", "Level Up and Storage at every lit lamp", "0"),
+    FLD_CHECK(PG_EXTRAS, ST_INI, "pc_boss_rematches", "", "Boss rematches at their lamps (experimental)", "0"),
     /* Controls (the list of bindings sits above these) */
     FLD_HEAD(PG_CONTROLS, "Mouse and movement"),
     FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_camera", "", "Mouse camera (while the mouse is captured)", "1"),
     FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_invert_y", "", "Invert the vertical axis", "0"),
     FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_menu", "", "Mouse in the menus", "1"),
+    FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_hide_cursor", "", "Hide the mouse cursor in the game", "0"),
     FLD_COMBO(PG_CONTROLS, ST_INI, "mouse_sensitivity", "", "Mouse camera speed:", kSensV, kSensL, "10"),
     FLD_COMBO(PG_CONTROLS, ST_INI, "move_smoothing", "", "Movement smoothing:", kSmoothV, kSmoothL, "60"),
     /* Online */
@@ -631,6 +746,11 @@ static int apply_env(void) {
 
     cfg_get_str("language", v, sizeof(v), "1");
     set_env("BB_LANGUAGE", v);
+    cfg_get_str("voice_language", v, sizeof(v), "auto");
+    set_env("BB_VOICE_LANGUAGE", v[0] ? v : "auto");
+    cfg_get_str("fullscreen_mode", v, sizeof(v), "borderless");
+    set_env("BB_FULLSCREEN_MODE", v[0] ? v : "borderless");
+    if (cfg_get_str("display", v, sizeof(v), "") && v[0]) set_env("BB_DISPLAY", v);
     if (cfg_get_str("player_name", v, sizeof(v), "")) {
         char* b = v;
         while (*b == ' ') ++b;
@@ -647,8 +767,6 @@ static int apply_env(void) {
     if (cfg_get_str("hdr", v, sizeof(v), "0") && !strcmp(v, "1")) set_env("BB_HDR", "1");
     cfg_get_str("fps_mode", v, sizeof(v), "60");
     set_env("BB_FPS", v);
-    /* Match run.py: uncap runs free, 90 gets a 90 Hz vblank, else 60. */
-    set_env("BB_VBLANK_HZ", !strcmp(v, "uncap") ? "0" : !strcmp(v, "90") ? "90" : "60");
     if (cfg_get_str("frame_cap", v, sizeof(v), "") && v[0]) set_env("BB_FPS_LIMIT", v);
     if (cfg_get_str("draw_pipe", v, sizeof(v), "") && v[0]) set_env("BB_DRAW_PIPE", v);
     if (cfg_get_str("readbacks", v, sizeof(v), "") && v[0]) set_env("BB_READBACKS", v);
@@ -1895,7 +2013,7 @@ static void pool_register_new(HWND page, const Kids* before, int mask) {
  * sign-in by device code, the environment of The Hunter's Dream) and scripts/launcher_coop.py
  * (BBSC: downloads, firewall, hosting, accounts, the co-op environment) hold the rules; they run
  * as jobs whose output lines arrive in the page. */
-enum { JOB_SIGNIN, JOB_COOP, JOB_COOP_STATUS };
+enum { JOB_SIGNIN, JOB_COOP, JOB_COOP_STATUS, JOB_ATLAS, JOB_ATLAS_STATUS };
 static int g_signing, g_checking, g_coop_busy;
 static int g_co_client, g_co_server, g_co_setup, g_co_hosting, g_co_failed;
 static char g_co_job[16];
@@ -2293,6 +2411,105 @@ static void build_online_extras(HWND page) {
     coop_buttons();
 }
 
+/* --- PC extras: Hunter's Atlas. scripts/atlas.py makes the maps from the player's game (5-15
+ * minutes, once) and says whether they are ready; its lines arrive as jobs. --- */
+static int g_atlas_busy, g_atlas_ready, g_atlas_after;
+static char g_atlas_last[300];
+
+static HWND ex(int id) {
+    return GetDlgItem(g_pages[PG_EXTRAS], id);
+}
+
+static void atlas_args(const char* verb, char* out, size_t n) {
+    char game[MAX_PATH], g[MAX_PATH], dir[MAX_PATH], d[MAX_PATH];
+    GetWindowTextA(field_by_key("game_dir")->hwnd, game, sizeof(game));
+    snprintf(dir, sizeof(dir), "%s\\atlas", g_root);
+    cmd_arg(game, g, sizeof(g));
+    cmd_arg(dir, d, sizeof(d));
+    if (!strcmp(verb, "prepare")) snprintf(out, n, "prepare --game \"%s\" --out \"%s\"", g, d);
+    else snprintf(out, n, "status --out \"%s\"", d);
+}
+
+static void atlas_status_job(void) {
+    if (g_atlas_busy) return;
+    char args[2 * MAX_PATH + 40];
+    atlas_args("status", args, sizeof(args));
+    job_start(JOB_ATLAS_STATUS, "atlas.py", args);
+}
+
+static void on_atlas_prepare(void) {
+    if (g_atlas_busy) return;
+    char game[MAX_PATH], eboot[MAX_PATH + 16], args[2 * MAX_PATH + 40];
+    GetWindowTextA(field_by_key("game_dir")->hwnd, game, sizeof(game));
+    snprintf(eboot, sizeof(eboot), "%s\\eboot.bin", game);
+    if (GetFileAttributesA(eboot) == INVALID_FILE_ATTRIBUTES) {
+        SetWindowTextA(ex(ID_AT_STATUS), "Pick the game folder (Play tab) first: the maps are made from it.");
+        return;
+    }
+    atlas_args("prepare", args, sizeof(args));
+    g_atlas_last[0] = 0;
+    g_atlas_busy = 1;
+    EnableWindow(ex(ID_AT_PREPARE), FALSE);
+    SetWindowTextA(ex(ID_AT_STATUS), "Preparing maps...");
+    if (!job_start(JOB_ATLAS, "atlas.py", args)) {
+        g_atlas_busy = 0;
+        EnableWindow(ex(ID_AT_PREPARE), TRUE);
+        SetWindowTextA(ex(ID_AT_STATUS), "The map helper could not be started.");
+    }
+}
+
+/* One line: the generator's {"progress": n, "stage": "..."} while preparing, "ready" or
+ * "not prepared" for the status. */
+static void on_atlas_line(int kind, char* line) {
+    if (kind == JOB_ATLAS_STATUS) {
+        g_atlas_ready = !strcmp(line, "ready");
+        return;
+    }
+    char* p = strstr(line, "\"progress\"");
+    if (p) {
+        char* colon = strchr(p, ':');
+        char text[400], stage[200] = "";
+        char* st = strstr(line, "\"stage\"");
+        if (st && (st = strchr(st + 7, '"'))) {
+            ++st;
+            char* end = strchr(st, '"');
+            size_t len = end ? (size_t)(end - st) : strlen(st);
+            if (len >= sizeof(stage)) len = sizeof(stage) - 1;
+            memcpy(stage, st, len);
+            stage[len] = 0;
+        }
+        snprintf(text, sizeof(text), "Preparing maps: %d%% %s", colon ? atoi(colon + 1) : 0, stage);
+        set_text_utf8(ex(ID_AT_STATUS), text);
+    } else {
+        snprintf(g_atlas_last, sizeof(g_atlas_last), "%s", line);
+    }
+}
+
+static void on_atlas_done(int kind) {
+    if (kind == JOB_ATLAS) {
+        g_atlas_busy = 0;
+        g_atlas_after = 1;
+        EnableWindow(ex(ID_AT_PREPARE), TRUE);
+        atlas_status_job();
+        return;
+    }
+    if (g_atlas_after && !g_atlas_ready) {
+        char text[400];
+        snprintf(text, sizeof(text), "Preparing the maps failed: %s", g_atlas_last[0] ? g_atlas_last : "see prepare.log in the atlas folder");
+        set_text_utf8(ex(ID_AT_STATUS), text);
+    } else {
+        SetWindowTextA(ex(ID_AT_STATUS), g_atlas_ready ? "Maps ready." : "Maps not prepared: Prepare maps makes them from your game.");
+    }
+    g_atlas_after = 0;
+}
+
+static void build_atlas_row(HWND page) {
+    int y = field_by_key("atlas_custom")->id;
+    w_button(page, ID_AT_PREPARE, "Prepare maps", 10, y, 96, 23);
+    HWND st = w_label(page, ID_AT_STATUS, "", 114, y + 4, PAGE_W - 130);
+    SetWindowPos(st, NULL, S(114), S(y + 4), S(PAGE_W - 130), S(28), SWP_NOZORDER);
+}
+
 /* --- Advanced: the shader cache --- */
 static void on_clear_cache(void) {
     if (g_running) {
@@ -2447,7 +2664,7 @@ static void on_open(int which) {
 static HWND make_page(void) {
     /* Same wndproc as main so page controls deliver WM_COMMAND/WM_HSCROLL; only the
      * main window owns Close/quit. */
-    return CreateWindowA("BbPage", "", WS_CHILD, 0, 0, 100, 100, g_main, NULL, NULL, NULL);
+    return CreateWindowA("BbPage", "", WS_CHILD | WS_VSCROLL, 0, 0, 100, 100, g_main, NULL, NULL, NULL);
 }
 
 static void place_pages(void) {
@@ -2458,6 +2675,48 @@ static void place_pages(void) {
     for (int i = 0; i < PG_COUNT; ++i)
         SetWindowPos(g_pages[i], NULL, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
                      SWP_NOZORDER);
+}
+
+/* The scroll range of a page: the bottom of its lowest control. */
+static void update_scroll(HWND page) {
+    RECT client;
+    GetClientRect(page, &client);
+    int bottom = 0;
+    for (HWND h = GetWindow(page, GW_CHILD); h; h = GetWindow(h, GW_HWNDNEXT)) {
+        RECT r;
+        GetWindowRect(h, &r);
+        MapWindowPoints(NULL, page, (POINT*)&r, 2);
+        if (r.bottom > bottom) bottom = r.bottom;
+    }
+    SCROLLINFO si = {.cbSize = sizeof(si), .fMask = SIF_RANGE | SIF_PAGE | SIF_POS, .nMin = 0,
+                     .nMax = bottom + S(8) - 1, .nPage = (UINT)client.bottom, .nPos = 0};
+    SetScrollInfo(page, SB_VERT, &si, TRUE);
+}
+
+static void page_scroll(HWND page, int code) {
+    SCROLLINFO si = {.cbSize = sizeof(si), .fMask = SIF_ALL};
+    GetScrollInfo(page, SB_VERT, &si);
+    int old = si.nPos, pos = old, line = S(ROW_H);
+    switch (code) {
+    case SB_LINEUP: pos -= line; break;
+    case SB_LINEDOWN: pos += line; break;
+    case SB_PAGEUP: pos -= (int)si.nPage; break;
+    case SB_PAGEDOWN: pos += (int)si.nPage; break;
+    case SB_THUMBTRACK:
+    case SB_THUMBPOSITION: pos = si.nTrackPos; break;
+    case SB_TOP: pos = 0; break;
+    case SB_BOTTOM: pos = si.nMax; break;
+    default: return;
+    }
+    int max = si.nMax - (int)si.nPage + 1;
+    if (max < 0) max = 0;
+    if (pos > max) pos = max;
+    if (pos < 0) pos = 0;
+    if (pos == old) return;
+    si.fMask = SIF_POS;
+    si.nPos = pos;
+    SetScrollInfo(page, SB_VERT, &si, TRUE);
+    ScrollWindowEx(page, 0, old - pos, NULL, NULL, NULL, NULL, SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE);
 }
 
 /* A group box opens at a K_HEAD field and is sized when the next one (or the page) ends. */
@@ -2641,6 +2900,18 @@ static void exclusive_cheats(int clicked_id) {
 /* --- window procedure (main window and pages) --- */
 static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
+    case WM_VSCROLL:
+        if (w != g_main) {
+            page_scroll(w, LOWORD(wp));
+            return 0;
+        }
+        break;
+    case WM_MOUSEWHEEL: {
+        int sel = TabCtrl_GetCurSel(g_tabs);
+        if (sel >= 0 && sel < PG_COUNT)
+            for (int i = 0; i < 3; ++i) page_scroll(g_pages[sel], (short)HIWORD(wp) > 0 ? SB_LINEUP : SB_LINEDOWN);
+        return 0;
+    }
     case WM_COMMAND: {
         int id = LOWORD(wp);
         if (id == ID_PLAY) on_run();
@@ -2659,6 +2930,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_CO_HOST) coop_job("host");
         else if (id == ID_CO_STOP) coop_job("stop");
         else if (id == ID_CO_COPY) on_coop_copy();
+        else if (id == ID_AT_PREPARE) on_atlas_prepare();
         else if (id == ID_OL_TEST) on_online_test();
         else if (id == ID_SHORTCUT) on_shortcut();
         else if (id == ID_CLEAR_CACHE) on_clear_cache();
@@ -2719,6 +2991,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_ONLINE_LINE:
         if ((int)wp == JOB_SIGNIN) on_signin_line((char*)lp);
+        else if ((int)wp == JOB_ATLAS || (int)wp == JOB_ATLAS_STATUS) on_atlas_line((int)wp, (char*)lp);
         else on_coop_line((char*)lp);
         free((char*)lp);
         return 0;
@@ -2726,6 +2999,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if ((int)wp == JOB_SIGNIN) {
             g_signing = 0;
             EnableWindow(ol(ID_OL_SIGNIN), TRUE);
+        } else if ((int)wp == JOB_ATLAS || (int)wp == JOB_ATLAS_STATUS) {
+            on_atlas_done((int)wp);
         } else {
             on_coop_done((int)wp);
         }
@@ -2764,6 +3039,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
             if (TabCtrl_GetCurSel(g_tabs) == PG_CONTROLS && !g_ctl_loaded) controls_refresh();
             if (TabCtrl_GetCurSel(g_tabs) == PG_ONLINE) online_refresh();
             if (TabCtrl_GetCurSel(g_tabs) == PG_LOG) log_reload(0);
+            if (TabCtrl_GetCurSel(g_tabs) == PG_EXTRAS) atlas_status_job();
         }
         break;
     }
@@ -2843,6 +3119,9 @@ static void build_ui(void) {
             build_log_page(g_pages[i]);
         } else if (i == PG_CONTROLS) {
             build_page(i, build_controls_top(g_pages[i]));
+        } else if (i == PG_EXTRAS) {
+            build_page(i, 8);
+            build_atlas_row(g_pages[i]);
         } else if (i == PG_ONLINE) {
             build_page(i, 8);
             build_online_extras(g_pages[i]);
@@ -2851,6 +3130,7 @@ static void build_ui(void) {
         }
     }
     place_pages();
+    for (int i = 0; i < PG_COUNT; ++i) update_scroll(g_pages[i]);
     show_page(0);
 
     /* A sunken status line under the tabs. */
@@ -2938,6 +3218,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
             if (sel == PG_GRAPHICS) fsr4_refresh();
             if (sel == PG_CONTROLS) controls_refresh();
             if (sel == PG_ONLINE) online_refresh();
+            if (sel == PG_EXTRAS) atlas_status_job();
         }
     }
     SetTimer(g_main, LOG_TIMER, 1500, NULL);

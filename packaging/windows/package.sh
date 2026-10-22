@@ -34,11 +34,11 @@ venv=${BB_LAUNCHER_VENV:-out/qt-venv}
 if [[ ! -x $venv/Scripts/python.exe ]]; then
     "$python" -m venv "$venv"
 fi
-"$venv/Scripts/python.exe" -m pip install -q --disable-pip-version-check pyinstaller certifi
+"$venv/Scripts/python.exe" -m pip install -q --disable-pip-version-check pyinstaller certifi pillow
 # The scripts run inside bb-runtime.exe (--script): the standard modules they import come along.
 hidden=()
 for module in argparse base64 bisect collections contextlib hashlib json re secrets shutil socket struct tempfile \
-              xml.etree.ElementTree urllib.request ctypes.wintypes certifi; do
+              xml.etree.ElementTree urllib.request ctypes.wintypes certifi PIL.Image; do
     hidden+=(--hidden-import "$module")
 done
 "$venv/Scripts/python.exe" -m PyInstaller --noconfirm --clean --log-level WARN --windowed \
