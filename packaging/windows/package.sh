@@ -41,6 +41,12 @@ for module in argparse base64 bisect collections contextlib hashlib json re secr
               xml.etree.ElementTree urllib.request ctypes.wintypes certifi PIL.Image; do
     hidden+=(--hidden-import "$module")
 done
+# And whatever the scripts and run.py import (packaging/windows/script_imports.py): a module the
+# frozen entry point does not reach is missing inside the package, and the game does not start.
+while IFS= read -r module; do
+    module=${module%$'\r'}
+    [[ -n $module && $module != _* && $module != msvcrt ]] && hidden+=(--hidden-import "$module")
+done < <("$venv/Scripts/python.exe" packaging/windows/script_imports.py scripts run.py)
 "$venv/Scripts/python.exe" -m PyInstaller --noconfirm --clean --log-level WARN --windowed \
     --name bb-runtime --icon "$(cygpath -w "$PWD/launcher/bloodborne.ico")" --distpath out/pyi-dist \
     --workpath out/pyi-work --specpath out/pyi-work --paths "$(cygpath -w "$PWD/scripts")" \

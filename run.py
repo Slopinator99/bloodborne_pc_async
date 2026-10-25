@@ -299,13 +299,20 @@ def main():
     # The run's log (BB_RUN_LOG, from the launcher): written here, so it outlives the launcher, the
     # previous run's log is kept in logs/, and an in-game restart continues the same file.
     sys.path.insert(0, str(PORT / 'scripts'))
-    import runlog
-    if os.environ.get('BB_RUN_LOG'):
-        runlog.attach(os.environ['BB_RUN_LOG'], append=restarted)
-        # Where the engine writes its crash and hang dumps: beside the logs.
-        os.environ.setdefault('BB_LOG_DIR', str(Path(os.environ['BB_RUN_LOG']).parent / 'logs'))
-    for line in runlog.header_lines(os.environ, args, PORT):
-        print(('(restarted from the game) ' if restarted else '') + line, flush=True)
+    # The log is a help, never a reason not to start: if it cannot be set up the game runs with
+    # the plain output it inherits.
+    try:
+        import runlog
+        if os.environ.get('BB_RUN_LOG'):
+            runlog.attach(os.environ['BB_RUN_LOG'], append=restarted)
+            # Where the engine writes its crash and hang dumps: beside the logs.
+            os.environ.setdefault('BB_LOG_DIR', str(Path(os.environ['BB_RUN_LOG']).parent / 'logs'))
+        for line in runlog.header_lines(os.environ, args, PORT):
+            print(('(restarted from the game) ' if restarted else '') + line, flush=True)
+    except Exception as error:  # noqa: BLE001 (any failure: ImportError, OSError, ...)
+        runlog = None
+        os.environ.pop('BB_RUN_LOG', None)
+        print(f'run.py: no run log ({error}); the output stays as it is', file=sys.stderr)
     if restarted:
         wait_for(int(args[1]))
         args = args[2:]
@@ -589,7 +596,7 @@ def main():
         # With BB_RUN_LOG the game's output goes through run.py, which writes the time in front
         # of each line. Without it the game keeps the output it inherits (a console, or a
         # launcher's pipe that an in-game restart hands on to the next run).
-        if os.environ.get('BB_RUN_LOG'):
+        if runlog and os.environ.get('BB_RUN_LOG'):
             game_proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT, creationflags=no_console())
             output = runlog.relay(game_proc.stdout)
