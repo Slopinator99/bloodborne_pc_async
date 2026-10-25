@@ -84,7 +84,7 @@ class RotationTests(unittest.TestCase):
 
 
 class AttachTests(unittest.TestCase):
-    """run.py's way: its own prints and a child's go to the file, which a restart continues."""
+    """run.py's way: its own prints and the game's (relayed) go to the file, which a restart continues."""
 
     def run_attach(self, folder, append):
         code = (
@@ -93,8 +93,7 @@ class AttachTests(unittest.TestCase):
             'import runlog\n'
             f'runlog.attach({str(Path(folder, "launcher-run.log"))!r}, append={append})\n'
             'print("from run.py", flush=True)\n'
-            'subprocess.run([sys.executable, "-c", "print(\'from a child\')"])\n'
-            'game = subprocess.Popen([sys.executable, "-u", "-c", "print(\'game line 1\'); print(\'game line 2\')"],\n'
+            'game =subprocess.Popen([sys.executable, "-u", "-c", "print(\'game line 1\'); print(\'game line 2\')"],\n'
             '                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)\n'
             'thread = runlog.relay(game.stdout)\n'
             'game.wait(); thread.join(5)\n'
@@ -103,11 +102,11 @@ class AttachTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout, '')     # nothing went to the original output
 
-    def test_its_own_output_the_childrens_and_the_games_land_in_the_file(self):
+    def test_its_own_output_and_the_games_land_in_the_file(self):
         with tempfile.TemporaryDirectory() as folder:
             self.run_attach(folder, False)
             text = Path(folder, 'launcher-run.log').read_text(encoding='utf-8')
-            for expected in ('from run.py', 'from a child', '] game line 1', '] game line 2', 'run.py ends'):
+            for expected in ('from run.py', '] game line 1', '] game line 2', 'run.py ends'):
                 self.assertIn(expected, text)
             self.assertRegex(text, r'\[\s*\d+\.\d{3}\] game line 1')
 
@@ -123,6 +122,34 @@ class AttachTests(unittest.TestCase):
             self.assertTrue(after.startswith(first))
             self.assertEqual(after.count('game line 1'), 2)
             self.assertEqual(len(list(Path(folder, 'logs').glob('run-*.log'))), 1)
+
+
+class ScriptOutputTests(unittest.TestCase):
+    """run.py's run_script: a script's output is written by run.py itself, line by line."""
+
+    def test_a_scripts_output_reaches_the_log_and_its_exit_code_is_kept(self):
+        import contextlib
+        import importlib.util
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / 'scripts').mkdir()
+            (Path(folder) / 'scripts' / 'speak.py').write_text(
+                'import sys\n'
+                'print("first line", flush=True)\n'
+                'print("to stderr", file=sys.stderr, flush=True)\n'
+                'sys.exit(int(sys.argv[1]))\n', encoding='utf-8')
+            spec = importlib.util.spec_from_file_location('run_under_test', ROOT / 'run.py')
+            run = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(run)
+            run.PORT = Path(folder)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(run.run_script('speak.py', '0'), '')
+            self.assertIn('first line', out.getvalue())
+            self.assertIn('to stderr', out.getvalue())          # stderr joins it
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                self.assertIsNone(run.run_script('speak.py', '3', optional=True))
+            self.assertIn('failed (exit code 3)', out.getvalue())
 
 
 if __name__ == '__main__':

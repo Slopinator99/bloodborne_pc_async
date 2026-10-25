@@ -4,7 +4,7 @@ the time since the start on every line (a log without times cannot tell a freeze
 
     header_lines(env, args, port_dir)   the lines printed before the game starts
     stamp_stream(lines, out, clock)     copies lines to out with "[  12.345] " in front
-    attach(path, append)                makes `path` the output of this process and its children
+    attach(path, append)                makes `path` the output of this process's own prints
     relay(pipe, out)                    stamps what a child process writes to a pipe
 """
 import io
@@ -109,28 +109,24 @@ def rotate(path, keep=KEEP_LOGS):
         pass  # a log that cannot be moved is overwritten: starting the game matters more
 
 
+_ATTACHED = None  # keeps the open log alive for the life of the process
+
+
 def attach(path, append=False):
-    """Makes `path` this process's standard output and error, and its children's: the log is
-    then written by run.py, whatever happens to the launcher that started it. A new run first
-    moves the previous log away (rotate); a restart (append) continues the same file."""
+    """Makes `path` the output of this process's own prints (sys.stdout and sys.stderr). It does
+    not touch the process's handles: the scripts run.py starts and the game have their output
+    read by run.py and written here (see run.py: run_script, relay), because a windowed runtime's
+    child processes cannot be given a redirected handle reliably. A new run first moves the
+    previous log away (rotate); a restart (append) continues the same file."""
+    global _ATTACHED
     path = Path(path)
     if not append:
         rotate(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    log = open(path, 'ab' if append else 'wb', buffering=0)
-    if os.name == 'nt':
-        import ctypes
-        import msvcrt
-        handle = msvcrt.get_osfhandle(log.fileno())
-        os.set_handle_inheritable(handle, True)
-        for which in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE: what children inherit
-            ctypes.windll.kernel32.SetStdHandle(which, handle)
-    os.dup2(log.fileno(), 1)
-    os.dup2(log.fileno(), 2)
-    for name, fd in (('stdout', 1), ('stderr', 2)):
-        setattr(sys, name, io.TextIOWrapper(io.FileIO(fd, 'w', closefd=False), encoding='utf-8',
-                                            errors='replace', write_through=True))
-    return log
+    stream = io.TextIOWrapper(open(path, 'ab' if append else 'wb', buffering=0), encoding='utf-8',
+                              errors='replace', write_through=True)
+    sys.stdout = sys.stderr = _ATTACHED = stream
+    return stream
 
 
 def relay(pipe, out=None, clock=time.monotonic):

@@ -139,9 +139,16 @@ def run_script(name, *args, capture=False, optional=False):
         result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True,
                                 encoding='utf-8', errors='replace', creationflags=no_console())
     else:
-        # stdin given: the output handles are passed explicitly (a windowed bb-runtime.exe child
-        # would get none otherwise).
-        result = subprocess.run(command, stdin=subprocess.DEVNULL, creationflags=no_console())
+        # The script's output is read here and written to this process's output as it comes (the
+        # run's log, or the launcher's pipe): a windowed bb-runtime.exe child cannot be handed a
+        # redirected handle reliably, and run.py owns the log.
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
+                                   creationflags=no_console())
+        for line in process.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        result = subprocess.CompletedProcess(command, process.wait(), stdout=None)
     if result.returncode:
         if not optional:
             sys.exit(result.returncode)
