@@ -1048,6 +1048,22 @@ void ShadNetClient::HandleNotification(u16 cmd_raw, const std::vector<u8>& paylo
             onClientRejected(n);
         break;
     }
+    case NotificationType::SignalingHelper: {
+        shadnet::RequestSignalingInfosReply pb;
+        if (!pb.ParseFromString(blob)) {
+            LOG_WARNING(ShadNet, "SignalingHelper parse error");
+            break;
+        }
+        NotifySignalingHelper n;
+        n.npid = pb.target_npid();
+        n.ip = pb.target_ip();
+        n.port = static_cast<u16>(pb.target_port());
+        LOG_INFO(ShadNet, "SignalingHelper: '{}' at {}:{} wants to connect", n.npid, n.ip,
+                 n.port);
+        if (onSignalingHelper)
+            onSignalingHelper(n);
+        break;
+    }
     default:
         LOG_DEBUG(ShadNet, "Unknown notification type {}", cmd_raw);
         break;

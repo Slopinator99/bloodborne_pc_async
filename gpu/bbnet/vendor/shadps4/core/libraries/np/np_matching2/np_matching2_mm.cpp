@@ -880,6 +880,10 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
     }
     client->onRoomEvent = [](const ShadNet::NotifyRoomEvent& n) { HandleRoomEvent(n); };
     client->onRoomMessage = [](const ShadNet::NotifyRoomMessage& n) { HandleRoomMessage(n); };
+    client->onSignalingHelper = [](const ShadNet::NotifySignalingHelper& n) {
+        SignalingHandler::HandlePeerConnectRequest(n.npid, IpStringToAddr(n.ip),
+                                                   Libraries::Net::sceNetHtons(n.port));
+    };
 }
 
 void ClearMmShadNetClient() {
@@ -895,6 +899,7 @@ void ClearMmShadNetClient() {
     if (old_client) {
         old_client->onRoomEvent = nullptr;
         old_client->onRoomMessage = nullptr;
+        old_client->onSignalingHelper = nullptr;
     }
     NpSignaling::Transport::SetTransportHooks({});
     NpSignaling::Transport::SetPeerResolver(nullptr);

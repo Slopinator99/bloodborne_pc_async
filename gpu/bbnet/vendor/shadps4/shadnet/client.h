@@ -128,6 +128,7 @@ enum class NotificationType : u16 {
     WebApiPushEvent = 17,    // Generic NP WebApi push event
     ServiceUnavailable = 18, // Server refused a service (e.g. matchmaking full)
     ClientRejected = 19,     // Server is signing this client out (e.g. version not accepted)
+    SignalingHelper = 100,   // SuperMedo shadNet: a player wants to connect to us
 };
 
 enum class ErrorType : uint8_t {
@@ -226,6 +227,11 @@ struct NotifyServiceUnavailable {
 };
 // Notification 19 (NotifyClientRejected): the server is signing this client out and will
 // disconnect right after.
+struct NotifySignalingHelper {
+    std::string npid; // the player who wants to connect
+    std::string ip;   // where they can be reached
+    u16 port = 0;
+};
 struct NotifyClientRejected {
     enum : u32 { ReasonVersion = 1 };
     u32 reason = 0;
@@ -349,6 +355,7 @@ public:
     std::function<void(const NotifyWebApiPushEvent&)> onWebApiPushEvent;
     std::function<void(const NotifyServiceUnavailable&)> onServiceUnavailable;
     std::function<void(const NotifyClientRejected&)> onClientRejected;
+    std::function<void(const NotifySignalingHelper&)> onSignalingHelper;
     // Async reply callback.
     //   cmd    —command this reply is for (matches the request's cmd)
     //   pkt_id —packet id echoed back from the original request header
