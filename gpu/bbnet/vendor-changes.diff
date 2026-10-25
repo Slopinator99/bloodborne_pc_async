@@ -207,3 +207,92 @@ index 1d8b958..f05d5cb 100644
  }
  
  u64 ShadNetClient::ReportClientVersion() {
+diff --git a/a/core/libraries/np/np_matching2/np_matching2_mm.cpp b/b/core/libraries/np/np_matching2/np_matching2_mm.cpp
+index 9701234..2755db0 100644
+--- a/a/core/libraries/np/np_matching2/np_matching2_mm.cpp
++++ b/b/core/libraries/np/np_matching2/np_matching2_mm.cpp
+@@ -824,6 +824,12 @@ void OnMatchingReply(ShadNet::CommandType cmd, u64 pkt_id, ShadNet::ErrorType er
+     DispatchRequestComplete(pr, error, body);
+ }
+ 
++// The address of this PC on the network it reaches shadNet through.
++static u32 MmLocalAddr() {
++    std::lock_guard lock(g_mm.mutex);
++    return g_mm.client ? g_mm.client->GetAddrLocal() : 0;
++}
++
+ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
+                         std::string_view server_host, u16 tcp_port) {
+     u32 server_addr = 0;
+@@ -864,6 +870,7 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
+         .configured_port = Net::GetP2PAdvertisedPort, // the bound port once running
+         .advertised_addr = Net::GetP2PAdvertisedAddr,
+         .ensure_transport = Net::EnsureP2PTransport,
++        .local_addr = MmLocalAddr,
+     });
+     NpSignaling::Transport::SetPeerResolver(matching2_enabled ? RequestSignalingInfos : nullptr);
+     NpSignaling::Transport::SetMatching2Enabled(matching2_enabled);
+diff --git a/a/core/libraries/np/np_matching2/np_matching2_signaling.cpp b/b/core/libraries/np/np_matching2/np_matching2_signaling.cpp
+index 01bfa18..56d418f 100644
+--- a/a/core/libraries/np/np_matching2/np_matching2_signaling.cpp
++++ b/b/core/libraries/np/np_matching2/np_matching2_signaling.cpp
+@@ -65,7 +65,7 @@ bool SendMatching2StunPing(const ContextObject& ctx) {
+     Matching2StunPing ping{};
+     ping.cmd = 0x01;
+     std::memcpy(ping.online_id, ctx.online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
+-    ping.local_ip = NpSignaling::Transport::AdvertisedAddr();
++    ping.local_ip = NpSignaling::Transport::LocalAddr();
+ 
+     const int rc =
+         NpSignaling::Transport::SignalingSendTo(&ping, sizeof(ping), server_addr, server_udp);
+diff --git a/a/core/libraries/np/np_signaling/np_signaling_transport.cpp b/b/core/libraries/np/np_signaling/np_signaling_transport.cpp
+index a75de84..df05bf6 100644
+--- a/a/core/libraries/np/np_signaling/np_signaling_transport.cpp
++++ b/b/core/libraries/np/np_signaling/np_signaling_transport.cpp
+@@ -52,6 +52,11 @@ bool EnsureTransport() {
+     return g_transport.ensure_transport ? g_transport.ensure_transport() : TransportIsReady();
+ }
+ 
++u32 LocalAddr() {
++    const u32 addr = g_transport.local_addr ? g_transport.local_addr() : 0;
++    return addr != 0 ? addr : AdvertisedAddr();
++}
++
+ void SetPeerResolver(PeerResolver fn) {
+     g_peer_resolver = fn;
+ }
+diff --git a/a/core/libraries/np/np_signaling/np_signaling_transport.h b/b/core/libraries/np/np_signaling/np_signaling_transport.h
+index 9d33b24..1f06de0 100644
+--- a/a/core/libraries/np/np_signaling/np_signaling_transport.h
++++ b/b/core/libraries/np/np_signaling/np_signaling_transport.h
+@@ -18,6 +18,7 @@ struct TransportHooks {
+     u16 (*configured_port)() = nullptr;
+     u32 (*advertised_addr)() = nullptr;
+     bool (*ensure_transport)() = nullptr;
++    u32 (*local_addr)() = nullptr;
+ };
+ void SetTransportHooks(const TransportHooks& hooks);
+ 
+@@ -29,6 +30,9 @@ bool TransportIsReady();
+ u16 ConfiguredPort();
+ u32 AdvertisedAddr();
+ bool EnsureTransport();
++// The LAN address sent in STUN pings (network order). shadNet hands it to players behind the
++// same public IP, since most routers don't loop packets for their own public IP back inside.
++u32 LocalAddr();
+ 
+ using PeerResolver = bool (*)(std::string_view online_id, u32* out_addr, u16* out_port);
+ void SetPeerResolver(PeerResolver fn);
+diff --git a/a/core/libraries/np/signaling_handler.cpp b/b/core/libraries/np/signaling_handler.cpp
+index ff0d91d..2d6854c 100644
+--- a/a/core/libraries/np/signaling_handler.cpp
++++ b/b/core/libraries/np/signaling_handler.cpp
+@@ -211,7 +211,7 @@ bool PublishSignalingInfo(const OrbisNpOnlineId& online_id) {
+ 
+     NpSignaling::StunPing ping{};
+     std::memcpy(ping.online_id, online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
+-    ping.local_ip = NpSignaling::Transport::AdvertisedAddr();
++    ping.local_ip = NpSignaling::Transport::LocalAddr();
+ 
+     const int rc =
+         NpSignaling::Transport::SignalingSendTo(&ping, sizeof(ping), server_addr, server_udp);

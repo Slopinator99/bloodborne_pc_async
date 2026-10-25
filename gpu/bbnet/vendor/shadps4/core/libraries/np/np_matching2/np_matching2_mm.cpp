@@ -824,6 +824,12 @@ void OnMatchingReply(ShadNet::CommandType cmd, u64 pkt_id, ShadNet::ErrorType er
     DispatchRequestComplete(pr, error, body);
 }
 
+// The address of this PC on the network it reaches shadNet through.
+static u32 MmLocalAddr() {
+    std::lock_guard lock(g_mm.mutex);
+    return g_mm.client ? g_mm.client->GetAddrLocal() : 0;
+}
+
 void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
                         std::string_view server_host, u16 tcp_port) {
     u32 server_addr = 0;
@@ -864,6 +870,7 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
         .configured_port = Net::GetP2PAdvertisedPort, // the bound port once running
         .advertised_addr = Net::GetP2PAdvertisedAddr,
         .ensure_transport = Net::EnsureP2PTransport,
+        .local_addr = MmLocalAddr,
     });
     NpSignaling::Transport::SetPeerResolver(matching2_enabled ? RequestSignalingInfos : nullptr);
     NpSignaling::Transport::SetMatching2Enabled(matching2_enabled);

@@ -211,7 +211,7 @@ bool PublishSignalingInfo(const OrbisNpOnlineId& online_id) {
 
     NpSignaling::StunPing ping{};
     std::memcpy(ping.online_id, online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
-    ping.local_ip = NpSignaling::Transport::AdvertisedAddr();
+    ping.local_ip = NpSignaling::Transport::LocalAddr();
 
     const int rc =
         NpSignaling::Transport::SignalingSendTo(&ping, sizeof(ping), server_addr, server_udp);
