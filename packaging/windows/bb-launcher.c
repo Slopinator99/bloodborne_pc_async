@@ -921,15 +921,18 @@ static void on_run(void) {
         return;
     }
     (void)runner;
-    /* Silent: no console window; the game's output goes to launcher-run.log. */
+    /* Silent: no console window. run.py writes the run's log itself (BB_RUN_LOG): it moves the
+     * previous run's log into the logs folder first, puts a header and the time in front of the lines,
+     * and an in-game restart continues the same file. */
     char logpath[MAX_PATH];
     snprintf(logpath, sizeof(logpath), "%s\\launcher-run.log", g_root);
+    set_env("BB_RUN_LOG", logpath);
     SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa), .lpSecurityDescriptor = NULL,
                                 .bInheritHandle = TRUE};
     HANDLE login = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
                                OPEN_EXISTING, 0, NULL);
-    HANDLE logout = CreateFileA(logpath, GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE logout = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                                OPEN_EXISTING, 0, NULL);
     STARTUPINFOA si = {.cb = sizeof(si)};
     DWORD flags = CREATE_NO_WINDOW;
     if (login != INVALID_HANDLE_VALUE && logout != INVALID_HANDLE_VALUE) {

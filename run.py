@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 PORT = Path(__file__).resolve().parent
 # The keyboard key images (PCBButtons from Nexus Mods), as the launcher adds them to the mods
@@ -95,7 +96,7 @@ def fail(message):
 # missing its core files now gets a clear message instead of crashing".)
 START_SCRIPTS = ('game_check.py', 'enhancements.py', 'atlas.py', 'patches.py', 'aspect_ratio.py', 'mods.py',
                  'language_files.py', 'hud_layout.py', 'content_profile.py', 'link_libc.py', 'link_modules.py',
-                 'prepare.py', 'shader_code.py', 'quiet_output.py')
+                 'prepare.py', 'shader_code.py', 'quiet_output.py', 'runlog.py')
 RELEASES = 'https://github.com/Jgamrot/bloodborne_pc/releases/latest'
 # Text languages (PS4 system language ids) the game shows without Unlock Game Region: English
 # (US) and Russian (GitHub issue #58: Russian text without it).
@@ -294,7 +295,16 @@ def force_utf8():
 def main():
     force_utf8()
     args = sys.argv[1:]
-    if len(args) >= 2 and args[0] == '--after':
+    restarted = len(args) >= 2 and args[0] == '--after'
+    # The run's log (BB_RUN_LOG, from the launcher): written here, so it outlives the launcher, the
+    # previous run's log is kept in logs/, and an in-game restart continues the same file.
+    sys.path.insert(0, str(PORT / 'scripts'))
+    import runlog
+    if os.environ.get('BB_RUN_LOG'):
+        runlog.attach(os.environ['BB_RUN_LOG'], append=restarted)
+    for line in runlog.header_lines(os.environ, args, PORT):
+        print(('(restarted from the game) ' if restarted else '') + line, flush=True)
+    if restarted:
         wait_for(int(args[1]))
         args = args[2:]
     # As run.sh: relative paths (BB_GAME_DIR, BB_DATA_DIR, fsr4_shaders/) are from the port.
@@ -574,12 +584,23 @@ def main():
                    '--user', str(user_dir),
                    '--timeout', env.get('BB_TIMEOUT', '0'), *args]
         # No stdin: an inherited pipe (shells such as Git Bash) cost the game its console output.
-        game_proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, creationflags=no_console())
+        # With BB_RUN_LOG the game's output goes through run.py, which writes the time in front
+        # of each line. Without it the game keeps the output it inherits (a console, or a
+        # launcher's pipe that an in-game restart hands on to the next run).
+        if os.environ.get('BB_RUN_LOG'):
+            game_proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                         stderr=subprocess.STDOUT, creationflags=no_console())
+            output = runlog.relay(game_proc.stdout)
+        else:
+            game_proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, creationflags=no_console())
+            output = None
         started = []
         try:
             started = start_companions(data, env, game_proc.pid)
             rc = game_proc.wait()
-            print(f'run.py: bb-probe exited with code {rc}', file=sys.stderr)
+            if output:
+                output.join(timeout=5)  # the rest of what the game wrote before it ended
+            print(f'run.py: bb-probe exited with code {rc} at {time.strftime("%Y-%m-%d %H:%M:%S")}', file=sys.stderr)
             return rc
         finally:
             for proc in started:
