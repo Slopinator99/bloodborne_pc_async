@@ -241,6 +241,17 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
             SDL_Delay(2);
         }
         LOG_INFO(Frontend, "Window closed by user");
+        {
+            // A line that survives any log level: how long ago the last frame started, so a
+            // log tells a freeze the player closed (seconds) from a normal quit (milliseconds).
+            const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count();
+            const auto last = BbStats::last_frame_ms.load(std::memory_order_relaxed);
+            std::printf("Window closed by the player; %llu frames shown, the last one started %lld ms ago\n",
+                        static_cast<unsigned long long>(BbStats::gpu_frames.load()),
+                        static_cast<long long>(last ? now - last : -1));
+        }
         std::fflush(stdout);
 #ifdef _WIN32
         // Not ExitProcess: DLL detach code (nvngx_dlssg.dll) can wait on threads it already killed.

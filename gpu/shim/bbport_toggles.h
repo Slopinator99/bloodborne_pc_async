@@ -102,6 +102,9 @@ inline std::atomic<int> gpu_thread_clock{-1}; ///< clockid_t of the GPU command 
 inline std::atomic<std::uint64_t> draws{0}, dispatches{0}, submissions{0};
 /// Frames the GPU command thread has started (display pass), for per-frame diagnostics.
 inline std::atomic<std::uint64_t> gpu_frames{0};
+/// steady_clock milliseconds when the GPU thread last started a frame (the window-close line
+/// says how long ago: a freeze closed by the player or a normal quit).
+inline std::atomic<std::int64_t> last_frame_ms{0};
 /// Wall time spent in operations suspected of stalls (ns, all threads).
 inline std::atomic<std::uint64_t> t_resident{0}, t_protect{0}, t_image_create{0}, t_refresh{0},
     t_staging{0}, t_host_wait{0}, t_copy{0}, copy_bytes{0}, t_read_faults{0}, read_faults{0},
