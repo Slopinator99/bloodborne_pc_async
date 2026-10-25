@@ -258,13 +258,26 @@ void Scheduler::NoteHostCopySource(u64 address, u64 size, bool pool, u64 seq) {
     std::unique_lock lk{host_copy_sources_mutex};
     for (;;) {
         PruneHostCopySources(host_copy_note_seq);
-        if (host_copy_sources.size() < HostCopySourceCap) {
+        if (host_copy_sources.size() < HostCopySourceCap()) {
             host_copy_sources.push_back({seq, address, end, pool, ++host_copy_note_seq});
             return;
         }
-        // No room: drain everything first (a bounded wait; progress is guaranteed as the
-        // recorder and pool threads consume). Never drop a range: an untracked pending
-        // copy would let a later narrowed wait skip over it.
+        if (!pool && seq != 0) {
+            // A recorder copy is already counted as issued (host_copies_issued) but is queued only
+            // after this returns, so draining everything here would wait for the copy itself:
+            // the draw recording thread stopped for good in a busy scene (a player's hang dump,
+            // 2026-10-25). Its range stays untracked instead, and WaitHostCopiesFor waits for it
+            // fully (never skips over it), so no narrowed wait can miss it.
+            u64 seen = host_copy_untracked_seq.load(std::memory_order_relaxed);
+            while (seen < seq && !host_copy_untracked_seq.compare_exchange_weak(
+                                     seen, seq, std::memory_order_release, std::memory_order_relaxed)) {
+            }
+            return;
+        }
+        // No room for a pool copy (not queued yet, nothing of ours outstanding): drain
+        // everything first (a bounded wait; progress is guaranteed as the recorder and pool
+        // threads consume). Never drop a range: an untracked pending copy would let a later
+        // narrowed wait skip over it.
         lk.unlock();
         WaitHostCopies();
         lk.lock();
@@ -284,7 +297,8 @@ void Scheduler::WaitHostCopiesFor(u64 address, u64 size) {
             if (end >= address) {
                 PruneHostCopySources(host_copy_note_seq);
                 const u64 done = host_copies_done.load(std::memory_order_acquire);
-                bool overlap = false;
+                // A recorder copy that could not be tracked and may still be pending: wait.
+                bool overlap = host_copy_untracked_seq.load(std::memory_order_acquire) > done;
                 for (const auto& e : host_copy_sources) {
                     if (!e.pool && e.seq <= done) {
                         continue;

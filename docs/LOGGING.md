@@ -50,7 +50,14 @@ and where were the threads. This is what the port writes, and what to send with 
 | `BB_HANG_SECONDS=N` | The hang limit, default 10. |
 | `BB_TEST_HANG_FRAME=N` | Test: stalls the GPU thread for 15 s at frame N (the HANG line, the dump, HANG over). |
 | `BB_TEST_CRASH_FRAME=N` | Test: faults at frame N (the Fault lines, the dump, exit code 3). |
+| `BB_HOST_COPY_SOURCE_CAP=N` | Test: how many host-copy ranges the scheduler tracks (default 512). `2` reproduced the freeze of 2026-10-25 on the unfixed code at frame 2. |
 | `BB_FRAME_DUMP_TRIGGER`, `BB_DUMP_TRIGGER`, `BB_DUMP_DIR` | Picture dumps of the displayed frame and of the upscaler's inputs (see `docs/upscaler.md`). |
+
+Reading a dump without a debugger: `python tools/minidump_threads.py hang-….dmp out/bb-probe.exe` lists
+every thread with its name, where it stopped and the return addresses on its stack with function
+names (use the unstripped `out/bb-probe.exe` of the same commit as the player's build; a package's
+`bin/bb-probe.exe` is that file with its debug information removed). Threads that are not waiting
+but spinning in `yield` are where to look first.
 
 Code: `scripts/runlog.py` (header, times, rotation), `src/probe.c` (`bb_write_minidump`, the fault
 handler), `gpu/shim/bbgpu.cpp` (the hang watchdog, the window-close line),

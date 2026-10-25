@@ -958,8 +958,18 @@ private:
         u64 note;
     };
     std::deque<HostCopySource> host_copy_sources;
+    /// Highest recorder-copy sequence whose range could not be tracked (the table was full):
+    /// narrowed waits wait for it fully (see NoteHostCopySource).
+    std::atomic<u64> host_copy_untracked_seq{0};
     u64 host_copy_note_seq = 0;
-    static constexpr size_t HostCopySourceCap = 512;
+    /// How many copy ranges are tracked (512; BB_HOST_COPY_SOURCE_CAP lowers it for tests).
+    static size_t HostCopySourceCap() {
+        static const size_t cap = [] {
+            const char* env = std::getenv("BB_HOST_COPY_SOURCE_CAP");
+            return env && *env ? std::max<size_t>(1, std::strtoull(env, nullptr, 10)) : size_t(512);
+        }();
+        return cap;
+    }
     // Erases entries a full wait covered (see .cpp). Caller holds host_copy_sources_mutex.
     void PruneHostCopySources(u64 boundary);
     std::atomic<u64> deferred_signals_issued{0}; ///< by the thread recording (A or B)
