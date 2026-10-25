@@ -98,8 +98,11 @@ cp tools/bloodborne_rpc/companion.json tools/bloodborne_rpc/config.json "$rpc/"
 # Legacy CPU (Intel 3rd generation and older): the translation plan scripts/cpu_compat.py applies.
 mkdir -p "$dest/tools" && cp tools/legacy-cpu-plan.json "$dest/tools/"
 cp run.py LICENSE README.md packaging/windows/README-Windows.txt "$dest/"
+# The log header names the build: the commit and the day (a source tree reads git itself).
+echo "commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown) $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown) $(date +%F)" > "$dest/build-info.txt"
 mkdir -p "$dest/docs"
 cp -r docs/images "$dest/docs/"
+cp docs/LOGGING.md "$dest/docs/"
 if [[ -d fsr4_shaders ]]; then cp -r fsr4_shaders "$dest/"; fi
 # Shader pre-build catalog (scripts/shader_catalog.py): records only, no game code or SPIR-V.
 if [[ -d shader_catalog ]]; then cp -r shader_catalog "$dest/"; fi

@@ -15,6 +15,7 @@
 #endif
 #ifdef _WIN32
 #include <windows.h>
+#include <dbghelp.h>
 #include "respawn_patch.h"
 #include "menu_heap_patch.h"
 #include "engine_hooks.h"
@@ -169,6 +170,45 @@ static void describe_address(char *out, size_t size, uintptr_t address) {
     }
     snprintf(out,size,"%p",(void *)address);
 }
+#ifdef _WIN32
+/* A minidump of this process (every thread's stack and the exception, if any) in BB_LOG_DIR:
+ * reason is crash, hang or closed-frozen. A hang repeats, so at most three are written.
+ * Opened with a debugger (WinDbg, lldb, Visual Studio) it says where each thread was. */
+void bb_write_minidump(const char *reason, void *exception_pointers) {
+    static volatile LONG written;
+    if (InterlockedIncrement(&written) > 3) return;
+    const char *env=getenv("BB_LOG_DIR");
+    char dir[MAX_PATH];
+    snprintf(dir,sizeof(dir),"%s",env && *env ? env : ".");
+    CreateDirectoryA(dir,NULL);
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    char path[MAX_PATH+64];
+    snprintf(path,sizeof(path),"%s\\%s-%04d%02d%02d-%02d%02d%02d.dmp",dir,reason,
+             t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
+    typedef BOOL (WINAPI *WriteDump)(HANDLE,DWORD,HANDLE,MINIDUMP_TYPE,PMINIDUMP_EXCEPTION_INFORMATION,
+                                     PMINIDUMP_USER_STREAM_INFORMATION,PMINIDUMP_CALLBACK_INFORMATION);
+    HMODULE lib=LoadLibraryA("dbghelp.dll");
+    WriteDump write=lib ? (WriteDump)(void *)GetProcAddress(lib,"MiniDumpWriteDump") : NULL;
+    HANDLE file=write ? CreateFileA(path,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL) : INVALID_HANDLE_VALUE;
+    if (file==INVALID_HANDLE_VALUE) {
+        printf("Dump: could not write a %s dump (%s)\n",reason,write ? "file" : "dbghelp.dll");
+        return;
+    }
+    MINIDUMP_EXCEPTION_INFORMATION info={GetCurrentThreadId(),(PEXCEPTION_POINTERS)exception_pointers,FALSE};
+    BOOL ok=write(GetCurrentProcess(),GetCurrentProcessId(),file,
+                  (MINIDUMP_TYPE)(MiniDumpWithThreadInfo|MiniDumpWithProcessThreadData|MiniDumpWithUnloadedModules),
+                  exception_pointers ? &info : NULL,NULL,NULL);
+    LARGE_INTEGER size={0};
+    GetFileSizeEx(file,&size);
+    CloseHandle(file);
+    printf("Dump: %s %s (%lld KiB)\n",ok ? "wrote" : "FAILED to write",path,(long long)(size.QuadPart/1024));
+    fflush(stdout);
+}
+#else
+void bb_write_minidump(const char *reason, void *exception_pointers) { (void)reason; (void)exception_pointers; }
+#endif
+
 static int fatal_reported;
 static LONG fatal_exception(EXCEPTION_POINTERS *info) {
     if (__atomic_exchange_n(&fatal_reported,1,__ATOMIC_ACQ_REL)) { Sleep(INFINITE); }
@@ -210,6 +250,7 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
         rbp=frame[0];
     }
     fflush(NULL);
+    bb_write_minidump("crash",info);
     TerminateProcess(GetCurrentProcess(),3);
     return EXCEPTION_CONTINUE_SEARCH;
 }

@@ -3697,6 +3697,22 @@ void Rasterizer::NoteFrameStart() {
         profiler->BeginFrame();
     }
     const u64 frame = BbStats::gpu_frames.fetch_add(1, std::memory_order_relaxed) + 1;
+    // Test switches for the log's hang and crash reports (docs: BB_TEST_HANG_FRAME=N stalls
+    // this thread for 15 s at frame N; BB_TEST_CRASH_FRAME=N faults at frame N).
+    static const u64 test_hang = [] {
+        const char* env = std::getenv("BB_TEST_HANG_FRAME");
+        return env ? u64(std::strtoull(env, nullptr, 10)) : u64(0);
+    }();
+    static const u64 test_crash = [] {
+        const char* env = std::getenv("BB_TEST_CRASH_FRAME");
+        return env ? u64(std::strtoull(env, nullptr, 10)) : u64(0);
+    }();
+    if (test_hang && frame == test_hang) {
+        std::this_thread::sleep_for(std::chrono::seconds(15));
+    }
+    if (test_crash && frame == test_crash) {
+        *static_cast<volatile int*>(nullptr) = 1;
+    }
     BbStats::last_frame_ms.store(std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now().time_since_epoch())
                                      .count(),

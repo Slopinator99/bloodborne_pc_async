@@ -41,6 +41,8 @@
 #define ID_LOG_COPY 5101
 #define ID_LOG_CLEAR 5102
 #define ID_LOG_OPEN 5103
+#define ID_LOG_FOLDER 5104
+#define ID_LOG_DIAG 5105
 #define LOG_TIMER 1
 #define ID_UPDATE_LABEL 5300
 #define ID_UPDATE_INSTALL 5301
@@ -2016,7 +2018,7 @@ static void pool_register_new(HWND page, const Kids* before, int mask) {
  * sign-in by device code, the environment of The Hunter's Dream) and scripts/launcher_coop.py
  * (BBSC: downloads, firewall, hosting, accounts, the co-op environment) hold the rules; they run
  * as jobs whose output lines arrive in the page. */
-enum { JOB_SIGNIN, JOB_COOP, JOB_COOP_STATUS, JOB_ATLAS, JOB_ATLAS_STATUS };
+enum { JOB_SIGNIN, JOB_COOP, JOB_COOP_STATUS, JOB_ATLAS, JOB_ATLAS_STATUS, JOB_DIAG };
 static int g_signing, g_checking, g_coop_busy;
 static int g_co_client, g_co_server, g_co_setup, g_co_hosting, g_co_failed;
 static char g_co_job[16];
@@ -2623,6 +2625,53 @@ static void log_clear(void) {
     log_reload(1);
 }
 
+/* --- Log tab: the logs folder, and the diagnostics zip (scripts/launcher_diag.py) a player can
+ * send with a bug report: logs, dumps, settings with the secrets hidden, system and card. --- */
+static int g_diag_busy;
+
+static void on_log_folder(void) {
+    char dir[MAX_PATH + 16];
+    snprintf(dir, sizeof(dir), "%s\\logs", g_root);
+    CreateDirectoryA(dir, NULL);
+    ShellExecuteA(g_main, "open", dir, NULL, NULL, SW_SHOWNORMAL);
+}
+
+static void on_diag(void) {
+    if (g_diag_busy) return;
+    char root[MAX_PATH], args[MAX_PATH + 8];
+    cmd_arg(g_root, root, sizeof(root));
+    snprintf(args, sizeof(args), "\"%s\"", root);
+    g_diag_busy = 1;
+    EnableWindow(GetDlgItem(g_pages[PG_LOG], ID_LOG_DIAG), FALSE);
+    status("Collecting the diagnostics...");
+    if (!job_start(JOB_DIAG, "launcher_diag.py", args)) {
+        g_diag_busy = 0;
+        EnableWindow(GetDlgItem(g_pages[PG_LOG], ID_LOG_DIAG), TRUE);
+        status("The diagnostics helper could not be started (no runtime or Python found?).");
+    }
+}
+
+/* ok<TAB>path of the zip, or error<TAB>reason. */
+static void on_diag_line(char* line) {
+    if (!strncmp(line, "ok\t", 3)) {
+        char arg[MAX_PATH + 16], msg[MAX_PATH + 96];
+        snprintf(arg, sizeof(arg), "/select,\"%s\"", line + 3);
+        ShellExecuteA(g_main, "open", "explorer.exe", arg, NULL, SW_SHOWNORMAL);
+        snprintf(msg, sizeof(msg), "Diagnostics saved: %s", line + 3);
+        status(msg);
+    } else if (!strncmp(line, "error\t", 6)) {
+        char msg[600];
+        snprintf(msg, sizeof(msg), "Could not save the diagnostics: %s", line + 6);
+        status(msg);
+        MessageBoxA(g_main, msg, "Bloodborne", MB_OK | MB_ICONWARNING);
+    }
+}
+
+static void on_diag_done(void) {
+    g_diag_busy = 0;
+    EnableWindow(GetDlgItem(g_pages[PG_LOG], ID_LOG_DIAG), TRUE);
+}
+
 static void build_log_page(HWND page) {
     /* A Unicode control, fed UTF-8 converted here: the game's output is UTF-8 whatever the
      * system's ANSI code page is. */
@@ -2635,9 +2684,11 @@ static void build_log_page(HWND page) {
                              DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, "Courier New");
     SendMessageA(g_log_edit, WM_SETFONT, (WPARAM)mono, 1);
     SendMessageA(g_log_edit, EM_SETLIMITTEXT, 0, 0);
-    w_button(page, ID_LOG_COPY, "Copy", 6, 298, 80, 23);
-    w_button(page, ID_LOG_CLEAR, "Clear", 92, 298, 80, 23);
-    w_button(page, ID_LOG_OPEN, "Open file", 178, 298, 80, 23);
+    w_button(page, ID_LOG_COPY, "Copy", 6, 298, 52, 23);
+    w_button(page, ID_LOG_CLEAR, "Clear", 62, 298, 52, 23);
+    w_button(page, ID_LOG_OPEN, "Open file", 118, 298, 68, 23);
+    w_button(page, ID_LOG_FOLDER, "Logs folder", 190, 298, 76, 23);
+    w_button(page, ID_LOG_DIAG, "Save diagnostics", 270, 298, 116, 23);
 }
 
 /* The Play page shortcuts: 0 game folder, 1 saves folder, 2 last run log, 3 bbport.ini. */
@@ -2946,6 +2997,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_LOG_COPY) log_copy();
         else if (id == ID_LOG_CLEAR) log_clear();
         else if (id == ID_LOG_OPEN) on_open(2);
+        else if (id == ID_LOG_FOLDER) on_log_folder();
+        else if (id == ID_LOG_DIAG) on_diag();
         else if (id == ID_CLOSE) SendMessageA(g_main, WM_CLOSE, 0, 0);
         else if (id == ID_SAVE) {
             if (save_fields()) status("Settings saved.");
@@ -2994,6 +3047,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_ONLINE_LINE:
         if ((int)wp == JOB_SIGNIN) on_signin_line((char*)lp);
+        else if ((int)wp == JOB_DIAG) on_diag_line((char*)lp);
         else if ((int)wp == JOB_ATLAS || (int)wp == JOB_ATLAS_STATUS) on_atlas_line((int)wp, (char*)lp);
         else on_coop_line((char*)lp);
         free((char*)lp);
@@ -3002,6 +3056,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         if ((int)wp == JOB_SIGNIN) {
             g_signing = 0;
             EnableWindow(ol(ID_OL_SIGNIN), TRUE);
+        } else if ((int)wp == JOB_DIAG) {
+            on_diag_done();
         } else if ((int)wp == JOB_ATLAS || (int)wp == JOB_ATLAS_STATUS) {
             on_atlas_done((int)wp);
         } else {

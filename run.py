@@ -302,6 +302,8 @@ def main():
     import runlog
     if os.environ.get('BB_RUN_LOG'):
         runlog.attach(os.environ['BB_RUN_LOG'], append=restarted)
+        # Where the engine writes its crash and hang dumps: beside the logs.
+        os.environ.setdefault('BB_LOG_DIR', str(Path(os.environ['BB_RUN_LOG']).parent / 'logs'))
     for line in runlog.header_lines(os.environ, args, PORT):
         print(('(restarted from the game) ' if restarted else '') + line, flush=True)
     if restarted:

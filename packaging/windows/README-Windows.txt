@@ -121,6 +121,13 @@ Data
 - Settings: bbport.ini next to Bloodborne.exe; launcher options in %APPDATA%\bbport-launcher.
 - Generated files (prepared game image, patches): out\.
 
+Logs and bug reports
+- The Log tab has "Save diagnostics": one zip on your Desktop with the logs, any crash or hang
+  dumps, your settings (passwords and tokens removed) and your graphics card. Send that zip with
+  a bug report and say what you saw (black screen, freeze, message) and where in the game.
+- Each run's log is kept: the previous one moves to logs\ next to the launcher (the last ten).
+  Details: docs\LOGGING.md.
+
 Online play (beta)
 - In the launcher's Online tab choose a play mode, then press PLAY:
   Offline: your own world, no servers (the default).

@@ -177,6 +177,66 @@ s32 PS4_SYSV_ABI sceKernelUsleep(u32 microseconds) {
 }
 } // namespace Libraries::Kernel
 
+#ifdef _WIN32
+extern "C" void bb_write_minidump(const char* reason, void* exception_pointers); // src/probe.c
+#else
+static void bb_write_minidump(const char*, void*) {}
+#endif
+
+namespace {
+std::int64_t SteadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// A hang detector: no frame started for BB_HANG_SECONDS (default 10) prints a HANG line with how
+// long it has lasted and writes a dump of every thread once; the line says when frames resume.
+// A log of a game that went black or froze then shows when it stopped and where.
+void StartHangWatchdog() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        std::thread([] {
+            const char* env = std::getenv("BB_HANG_SECONDS");
+            const std::int64_t limit_ms = (env && *env ? std::atoll(env) : 10) * 1000;
+            bool hung = false;
+            std::int64_t reported = 0, hung_since = 0;
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                const std::int64_t last = BbStats::last_frame_ms.load(std::memory_order_relaxed);
+                if (last == 0) {
+                    continue; // no frame yet: still starting
+                }
+                const std::int64_t now = SteadyMs();
+                const std::int64_t age = now - last;
+                if (age >= limit_ms) {
+                    if (!hung) {
+                        hung = true;
+                        hung_since = last;
+                        std::printf("HANG: no frame for %lld s (frame %llu)\n",
+                                    static_cast<long long>(age / 1000),
+                                    static_cast<unsigned long long>(BbStats::gpu_frames.load()));
+                        std::fflush(stdout);
+                        bb_write_minidump("hang", nullptr);
+                        reported = now;
+                    } else if (now - reported >= 30000) {
+                        std::printf("HANG: still no frame after %lld s\n",
+                                    static_cast<long long>(age / 1000));
+                        std::fflush(stdout);
+                        reported = now;
+                    }
+                } else if (hung) {
+                    hung = false;
+                    std::printf("HANG over: frames resumed after about %lld s without one\n",
+                                static_cast<long long>((last - hung_since) / 1000));
+                    std::fflush(stdout);
+                }
+            }
+        }).detach();
+    });
+}
+} // namespace
+
 namespace {
 // SDL video must be driven from one thread: the window lives on its own host thread.
 std::thread g_window_thread;
@@ -237,6 +297,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
             g_window_ready = true;
         }
         g_window_cv.notify_all();
+        StartHangWatchdog();
         while (window->PollEvents()) {
             SDL_Delay(2);
         }
@@ -251,6 +312,12 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
             std::printf("Window closed by the player; %llu frames shown, the last one started %lld ms ago\n",
                         static_cast<unsigned long long>(BbStats::gpu_frames.load()),
                         static_cast<long long>(last ? now - last : -1));
+            if (last && now - last >= 3000) {
+                std::printf("The game was frozen (no frame for %lld s) when the window was closed\n",
+                            static_cast<long long>((now - last) / 1000));
+                std::fflush(stdout);
+                bb_write_minidump("closed-frozen", nullptr);
+            }
         }
         std::fflush(stdout);
 #ifdef _WIN32
