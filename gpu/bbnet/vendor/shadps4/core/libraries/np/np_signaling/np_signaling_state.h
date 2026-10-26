@@ -160,6 +160,7 @@ struct PeerTransport {
     s64 last_peer_rx_us = 0;
     s64 last_handshake_send_us = 0;
     s64 handshake_start_us = 0; // first handshake send of the current attempt
+    bool relayed = false;       // switched to the shadNet relay
 };
 
 struct ConnectionInfo {

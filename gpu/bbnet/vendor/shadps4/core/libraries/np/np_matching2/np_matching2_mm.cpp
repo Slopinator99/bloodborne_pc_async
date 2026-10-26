@@ -857,6 +857,7 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
         NpSignaling::Transport::SetPeerResolver(nullptr);
         NpSignaling::Transport::SetMatching2Enabled(false);
         NpSignaling::Transport::SetMmServerEndpoint(0, 0);
+        Net::SetP2PRelayServer(0, 0);
         StopMatching2SignalingRuntime();
         return;
     }
@@ -875,6 +876,7 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
     NpSignaling::Transport::SetPeerResolver(matching2_enabled ? RequestSignalingInfos : nullptr);
     NpSignaling::Transport::SetMatching2Enabled(matching2_enabled);
     NpSignaling::Transport::SetMmServerEndpoint(server_addr, server_udp_port);
+    Net::SetP2PRelayServer(server_addr, server_udp_port);
     if (!matching2_enabled) {
         StopMatching2SignalingRuntime();
     }

@@ -16,6 +16,7 @@
 #include "common/logging/log.h"
 #include "common/singleton.h"
 #include "core/libraries/net/net.h"
+#include "core/libraries/net/net_p2p.h"
 #include "core/libraries/net/net_util.h"
 #include "core/libraries/np/np_error.h"
 #include "core/libraries/np/np_handler/np_handler.h"
@@ -35,6 +36,7 @@ constexpr auto kMatching2Timeout = std::chrono::seconds(30);
 constexpr auto kMatching2EstablishDelay = std::chrono::milliseconds(1000);
 constexpr auto kStunPingInterval = std::chrono::seconds(5);
 constexpr s64 kHandshakeConnectTimeoutMs = 30'000;
+constexpr s64 kRelayAfterUs = 4'000'000; // no answer by then: use the shadNet relay
 constexpr s64 kHandshakeRetransmitMs = 500;
 constexpr s64 kKeepaliveIntervalMs = 45'000;
 
@@ -1234,10 +1236,11 @@ void StepPendingConnections() {
     const s64 now = NpSignaling::NowUs();
     std::vector<s32> resend;
     std::vector<s32> timeout;
+    std::vector<std::pair<s32, u32>> relay;
 
     {
         NpSignaling::SignalingMutexGuard lock;
-        for (const auto& [transport_id, transport] :
+        for (auto& [transport_id, transport] :
              NpHandler::GetInstance().GetSignalingState().peer_transports) {
             if (transport.status == NpSignaling::ORBIS_NP_SIGNALING_CONN_STATUS_ACTIVE ||
                 transport.state == NpSignaling::ConnState::Inactive) {
@@ -1254,6 +1257,15 @@ void StepPendingConnections() {
                 continue;
             }
 
+            // Nothing from the peer a few seconds in: routers block the direct way, so go
+            // through the relay on the shadNet server from now on.
+            if (!transport.relayed && transport.addr != 0 && transport.handshake_start_us != 0 &&
+                transport.last_peer_rx_us < transport.handshake_start_us &&
+                now - transport.handshake_start_us > kRelayAfterUs) {
+                transport.relayed = true;
+                relay.emplace_back(transport_id, transport.addr);
+            }
+
             if (transport.last_handshake_send_us == 0 ||
                 now - transport.last_handshake_send_us >=
                     std::chrono::duration_cast<std::chrono::microseconds>(kMatching2StepInterval)
@@ -1263,6 +1275,18 @@ void StepPendingConnections() {
         }
     }
 
+    for (const auto& [transport_id, addr] : relay) {
+        LOG_INFO(Lib_NpSignaling, "No answer from peer {:#x}: connecting through the relay",
+                 addr);
+        Net::UseP2PRelayFor(addr);
+        // The peer may have missed our one activation request as well.
+        NpSignaling::SignalingMutexGuard lock;
+        for (const auto& [conn_id, ci] : NpHandler::GetInstance().GetSignalingState().connections) {
+            if (ci.transport_id == transport_id && ci.locally_activated) {
+                SendActivate(ci);
+            }
+        }
+    }
     for (const s32 transport_id : resend) {
         StartTransportHandshakeInitiator(transport_id);
     }
