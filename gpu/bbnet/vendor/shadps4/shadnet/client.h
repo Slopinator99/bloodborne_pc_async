@@ -17,6 +17,7 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h> // tcp_keepalive, SIO_KEEPALIVE_VALS
 using ShadSocketHandle = SOCKET;
 static constexpr ShadSocketHandle SHAD_INVALID_SOCK = INVALID_SOCKET;
 #define SHAD_CLOSE(s) ::closesocket(s)
@@ -26,6 +27,7 @@ static constexpr ShadSocketHandle SHAD_INVALID_SOCK = INVALID_SOCKET;
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 using ShadSocketHandle = int;
@@ -42,6 +44,15 @@ static constexpr u32 SHAD_CONNECT_TIMEOUT_MS = 10000; // 10 second connect/hands
 static constexpr u32 SHAD_CONNECT_MAX_ATTEMPTS = 4;
 static constexpr u32 SHAD_CONNECT_RETRY_BACKOFF_MS =
     1000; // base backoff, doubled per retry (cap 8s)
+// bbport: TCP keepalive on the open connection. Nothing is sent while a player is idle, so a
+// router's or the server's idle timeout dropped it silently, and a dead link went unnoticed until
+// the next request: probes after a minute without traffic, then every 10 s. The server's TCP
+// stack answers them; nothing changes in the protocol.
+static constexpr u32 SHAD_KEEPALIVE_IDLE_MS = 60000;
+static constexpr u32 SHAD_KEEPALIVE_INTERVAL_MS = 10000;
+// bbport: how long the login reply may take. A server that took the connection but never answered
+// held the reconnect up for good.
+static constexpr u32 SHAD_AUTH_TIMEOUT_MS = 30000;
 static constexpr u32 SHAD_PROTOCOL_VERSION = 1;
 static constexpr u32 SHAD_MAX_PACKET_SIZE = 0x800000; // 8 MiB
 
@@ -385,6 +396,7 @@ private:
     void WriterThread();
     bool DoConnect();
     void DoDisconnect();
+    void EnableKeepalive();
     bool RecvN(u8* buf, u32 n);
     bool SendAll(const std::vector<u8>& data);
     std::vector<u8> BuildPacket(CommandType cmd, u64 id, const std::vector<u8>& payload) const;
@@ -406,6 +418,9 @@ private:
     static u64 GetLE64(const u8* p);
 
     ShadSocketHandle m_sock = SHAD_INVALID_SOCK;
+    // bbport: the last failed recv() (0: the server closed; -1 with the socket error), for the log.
+    int m_last_recv_result = 0;
+    int m_last_recv_error = 0;
     std::string m_host;
     u16 m_port = 31313;
     std::string m_npid;

@@ -391,8 +391,9 @@ private:
     // Start the health-monitor worker thread if not already running (idempotent).
     void StartWorker();
 
-    // Disconnect and remove one user's client.
-    void DisconnectUser(s32 user_id);
+    // Disconnect and remove one user's client. tell_game false: a network drop, where the game
+    // hears SignedOut only once the reconnect has not made it within kSignedOutGrace (GraceThread).
+    void DisconnectUser(s32 user_id, bool tell_game = true);
     // Fail every pending score/TUS request submitted by this user so pollers
     // and blocked WaitAsync callers wake up instead of hanging forever.
     void FailPendingRequests(s32 user_id, s32 error_code);
@@ -401,6 +402,10 @@ private:
     // Transparent reconnect after a network drop
     void MarkForReconnect(s32 user_id);
     void TryReconnect();
+    // bbport: SignedOut for drops whose reconnect missed kSignedOutGrace. Its own thread: a
+    // reconnect attempt holds the worker for up to a minute and more.
+    void GraceThread();
+    void TellOverdueSignedOut();
     void FireStateCallback(s32 user_id, NpManager::OrbisNpState state);
 
     // Notification forwarders wired into each client
@@ -510,11 +515,16 @@ private:
     std::atomic<bool> m_initialized{false};
     std::atomic<bool> m_worker_running{false};
     std::thread m_worker_thread;
+    std::thread m_grace_thread;
 
     // Users dropped by a network error and awaiting transparent reconnect
     struct ReconnectState {
         std::chrono::steady_clock::time_point next_attempt{};
         std::chrono::milliseconds backoff{0};
+        // bbport: the game hears SignedOut at tell_game_at unless the reconnect made it first;
+        // game_told once it has (then the reconnect brings SignedIn).
+        std::chrono::steady_clock::time_point tell_game_at{};
+        bool game_told = false;
     };
     std::unordered_map<s32, ReconnectState> m_reconnect;
 
