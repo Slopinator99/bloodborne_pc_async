@@ -364,16 +364,19 @@ bool NpHandler::ConnectUser(s32 user_id, const std::string& host, u16 port, cons
     NpMatching2::SetMmShadNetClient(client, host, port);
 
     // Build OrbisNpId
-    bool game_knows = true; // bbport: whether the game saw this user signed out
+    // bbport: the client added, the decision and its SignedIn under m_mutex_sign_state, as
+    // TellOverdueSignedOut decides and fires its SignedOut: the game cannot end on SignedOut while
+    // signed in, nor hear SignedIn before the SignedOut it follows.
+    std::lock_guard sign_lock(m_mutex_sign_state);
+    bool game_knows = true; // whether the game saw this user signed out
     {
         OrbisNpId np_id{};
         SetNpId(np_id, npid);
         std::lock_guard lock(m_mutex_clients);
         m_np_ids[user_id] = np_id;
         m_clients[user_id] = std::move(client);
-        // bbport: a reconnect within kSignedOutGrace: the game never heard SignedOut, so no
-        // SignedIn either. Read with the client added, under the same lock as GraceThread's
-        // check, so the game cannot hear SignedOut without the SignedIn after it.
+        // A reconnect within kSignedOutGrace: the game never heard SignedOut, so no SignedIn
+        // either.
         if (auto it = m_reconnect.find(user_id); it != m_reconnect.end() && !it->second.game_told)
             game_knows = false;
     }
@@ -507,17 +510,19 @@ void NpHandler::WorkerThread() {
             LOG_WARNING(NpHandler, "user_id={} connection dropped (network); {}", uid,
                         retry ? "will retry" : "online is off for this session");
             DisconnectUser(uid, !retry); // stops/removes the dead client
-            if (retry)
-                MarkForReconnect(uid); // schedule transparent reconnect (network drop, not logout)
+            // Schedule a transparent reconnect (network drop, not logout); online turned off in
+            // between: the game is told now.
+            if (retry && !MarkForReconnect(uid))
+                FireStateCallback(uid, NpManager::OrbisNpState::SignedOut);
         }
 
         TryReconnect();
     }
 }
 
-void NpHandler::MarkForReconnect(s32 user_id) {
+bool NpHandler::MarkForReconnect(s32 user_id) {
     if (!EmulatorSettings.IsShadNetEnabled())
-        return; // offline mode: nothing to reconnect to
+        return false; // offline mode: nothing to reconnect to
     constexpr auto kInitialBackoff = std::chrono::milliseconds(2000);
     std::lock_guard lock(m_mutex_clients);
     auto& st = m_reconnect[user_id];
@@ -525,6 +530,7 @@ void NpHandler::MarkForReconnect(s32 user_id) {
     st.next_attempt = std::chrono::steady_clock::now() + st.backoff;
     st.tell_game_at = std::chrono::steady_clock::now() + kSignedOutGrace;
     st.game_told = false;
+    return true;
 }
 
 void NpHandler::TryReconnect() {
@@ -582,6 +588,7 @@ void NpHandler::GraceThread() {
 }
 
 void NpHandler::TellOverdueSignedOut() {
+    std::lock_guard sign_lock(m_mutex_sign_state); // with ConnectUser's SignedIn, in order
     const auto now = std::chrono::steady_clock::now();
     std::vector<s32> overdue;
     {

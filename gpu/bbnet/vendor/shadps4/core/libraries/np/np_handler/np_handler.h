@@ -400,7 +400,8 @@ private:
 
     void WorkerThread();
     // Transparent reconnect after a network drop
-    void MarkForReconnect(s32 user_id);
+    // false: online is off (nothing to reconnect to), the caller tells the game now.
+    bool MarkForReconnect(s32 user_id);
     void TryReconnect();
     // bbport: SignedOut for drops whose reconnect missed kSignedOutGrace. Its own thread: a
     // reconnect attempt holds the worker for up to a minute and more.
@@ -516,6 +517,11 @@ private:
     std::atomic<bool> m_worker_running{false};
     std::thread m_worker_thread;
     std::thread m_grace_thread;
+    // bbport: held across "decide and fire" of a reconnect's SignedIn (ConnectUser) and of an
+    // overdue SignedOut (TellOverdueSignedOut), so the game hears them in the order they were
+    // decided. Taken before m_mutex_clients, and never while m_mutex_clients is held: a state
+    // callback reads the clients.
+    std::mutex m_mutex_sign_state;
 
     // Users dropped by a network error and awaiting transparent reconnect
     struct ReconnectState {
