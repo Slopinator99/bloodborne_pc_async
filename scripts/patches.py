@@ -456,8 +456,26 @@ def online_allowed(names):
     return [n for n in names if n not in blocked]
 
 
+# The game's AA step forced to FXAA2_GS (anti_aliasing=fxaa), a patch at start.
+FORCE_FXAA='FXAA2_GS'
+
+
+def anti_aliasing(settings):
+    """(the game's own AA on, its AA step forced to FXAA2_GS) of bbport.ini anti_aliasing
+    (BbSettings::SyncAntiAliasing): auto = the game's own without an upscaler; game; fxaa (FXAA2_GS,
+    the AA step on); off; smaa (the port's SMAA, the game's AA off). Without the key
+    (older settings) effect_game_aa as it is."""
+    mode=settings.get('anti_aliasing')
+    if mode is None: return settings.get('effect_game_aa','1')=='1',False
+    upscaling=settings.get('upscaler','fsr3')!='off'
+    return mode in ('game','fxaa') or (mode=='auto' and not upscaling),mode=='fxaa'
+
+
 def effect_patches(settings):
     names=[]
+    game_aa,fxaa=anti_aliasing(settings)
+    settings=dict(settings,effect_game_aa='1' if game_aa else '0')
+    if fxaa: names.append(FORCE_FXAA)
     for key,(off,on) in EFFECTS.items():
         if key not in settings: continue
         name=on if settings[key]=='1' else off

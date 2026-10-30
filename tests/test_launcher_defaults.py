@@ -35,7 +35,7 @@ def c_fields():
 # The drop-down lists of the C launcher against the Python launcher's own (key -> list name).
 OPTION_LISTS = {
     'upscaler': 'UPSCALERS', 'preset': 'PRESETS', 'output_res': 'OUTPUTS', 'live_resolution': 'LIVE',
-    'model_lod': 'LODS', 'fps_mode': 'FPS_MODES', 'frame_cap': 'FRAME_CAPS', 'frames_ahead': 'FRAMES_AHEAD',
+    'anti_aliasing': 'ANTI_ALIASING', 'model_lod': 'LODS', 'fps_mode': 'FPS_MODES', 'frame_cap': 'FRAME_CAPS', 'frames_ahead': 'FRAMES_AHEAD',
     'present_mode': 'PRESENT_MODES', 'language': 'LANGUAGES', 'draw_pipe': 'DRAW_PIPE',
     'readbacks': 'READBACKS', 'mouse_sensitivity': 'MOUSE_SPEEDS', 'move_smoothing': 'MOVE_SMOOTHING',
     'vram_budget_mb': 'VRAM_BUDGETS', 'frame_gen': 'FRAME_GENERATION',

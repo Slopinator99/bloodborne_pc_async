@@ -819,5 +819,29 @@ class GameVersionTests(unittest.TestCase):
         self.assertFalse(eboot_is_109(str(game / 'eboot.bin')))
 
 
+class AntiAliasingTests(unittest.TestCase):
+    """bbport.ini anti_aliasing -> the game's AA effect and the FXAA2_GS patch (patches.anti_aliasing)."""
+
+    def test_modes(self):
+        from patches import anti_aliasing
+        cases = {('auto', 'off'): (True, False), ('auto', 'fsr3'): (False, False),
+                 ('game', 'fsr3'): (True, False), ('fxaa', 'fsr3'): (True, True),
+                 ('off', 'off'): (False, False), ('smaa', 'off'): (False, False)}
+        for (mode, upscaler), expected in cases.items():
+            self.assertEqual(anti_aliasing({'anti_aliasing': mode, 'upscaler': upscaler}), expected, (mode, upscaler))
+
+    def test_without_the_key_the_effect_switch_decides(self):
+        from patches import anti_aliasing
+        self.assertEqual(anti_aliasing({'effect_game_aa': '0'}), (False, False))
+        self.assertEqual(anti_aliasing({'effect_game_aa': '1', 'upscaler': 'fsr3'}), (True, False))
+
+    def test_fxaa_patch_is_selected_and_exists(self):
+        names = effect_patches({'anti_aliasing': 'fxaa', 'upscaler': 'off'})
+        self.assertIn('FXAA2_GS', names)
+        self.assertNotIn('FXAA2_GS', effect_patches({'anti_aliasing': 'smaa', 'upscaler': 'off'}))
+        xml = (ROOT / 'patches' / 'Bloodborne.xml').read_text(encoding='utf-8')
+        self.assertIn('Name="FXAA2_GS"', xml)
+
+
 if __name__ == '__main__':
     unittest.main()

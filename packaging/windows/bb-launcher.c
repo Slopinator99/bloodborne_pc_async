@@ -142,6 +142,9 @@ static const char* kOutputL[] = {
     "1920 x 1440 (4:3)"};
 static const char* kLiveV[] = {"auto", "0", "1"};
 static const char* kLiveL[] = {"Auto (by graphics card)", "Off (faster)", "On (change without restarting)"};
+static const char* kAaV[] = {"auto", "game", "fxaa", "smaa", "off"};
+static const char* kAaL[] = {"Automatic (the game's, none with an upscaler)", "The game's own",
+                             "FXAA2_GS", "SMAA 1x (without an upscaler)", "Off"};
 static const char* kLodV[] = {"0", "-2", "1", "2"};
 static const char* kLodL[] = {"As in the game", "Highest (-2)", "Lower (1)", "Lowest (2)"};
 static const char* kFpsV[] = {"120", "144", "90", "60", "uncap", "30"};
@@ -307,6 +310,7 @@ static Field g_fields[] = {
     FLD_CHECK(PG_GRAPHICS, ST_INI, "sharpen", "", "Sharpening (RCAS)", "1"),
     FLD_SLIDER(PG_GRAPHICS, ST_INI, "sharpness", "Sharpness:", "0.50"),
     FLD_CHECK(PG_GRAPHICS, ST_INI, "object_motion", "", "Object motion vectors (about 10% FPS)", "1"),
+    FLD_COMBO(PG_GRAPHICS, ST_INI, "anti_aliasing", "", "Anti-aliasing:", kAaV, kAaL, "auto"),
     FLD_COMBO(PG_GRAPHICS, ST_INI, "model_lod", "", "Model detail (LOD):", kLodV, kLodL, "0"),
     FLD_HEAD(PG_GRAPHICS, "Frame generation"),
     FLD_COMBO(PG_GRAPHICS, ST_INI, "frame_gen", "", "Frame generation:", kFgV, kFgL, "off"),

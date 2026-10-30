@@ -270,7 +270,7 @@ INI_FLAGS = {'sharpen', 'object_motion', 'show_fps', 'mouse_camera', 'mouse_inve
              *(k for k, _t, _o in EFFECTS + EXTRAS + CHEATS + TWEAKS + ENHANCEMENTS + ATLAS)}
 INI_DEFAULTS = {'upscaler': 'dlss', 'preset': '2', 'sharpen': '1', 'sharpness': '0.50',
                 'object_motion': '1', 'show_fps': '1', 'output_res': '2560x1440', 'hud_position': '100', 'model_lod': '0',
-                'live_resolution': 'auto', 'mouse_camera': '1', 'mouse_sensitivity': '10', 'mouse_menu': '1',
+                'live_resolution': 'auto', 'anti_aliasing': 'auto', 'mouse_camera': '1', 'mouse_sensitivity': '10', 'mouse_menu': '1',
                 'mouse_invert_y': '0', 'mouse_hide_cursor': '0', 'overlay_pad_shortcut': '1', 'pad_back': 'gestures', 'move_smoothing': '60', 'frame_gen': 'off', 'frame_gen_multiplier': '2', 'frame_gen_fit_display': '0',
                 'atlas_npc_mode': 'all',
                 **{key: '1' if on else '0' for key, _t, on in EFFECTS + EXTRAS + CHEATS + TWEAKS + ENHANCEMENTS + ATLAS}}
@@ -342,6 +342,14 @@ HUD_POSITIONS = [('100', ('Screen edges', 'У краёв экрана')), ('75',
 
 LIVE = [('auto', ('Auto (by graphics card)', 'Авто (по видеокарте)')), ('0', ('Off (faster)', 'Выключена (быстрее)')),
         ('1', ('On (change without restarting)', 'Включена (без перезапуска)'))]
+# Anti-aliasing (bbport.ini anti_aliasing; after upstream bbport 0.7): auto = the game's own without an
+# upscaler, none with one; game; fxaa = the game's AA step runs FXAA2_GS (a patch at start); off;
+# smaa = SMAA 1x on the finished scene without an upscaler (the game's AA off).
+ANTI_ALIASING = [('auto', ("Automatic (the game's, none with an upscaler)", 'Автоматически')),
+                 ('game', ("The game's own", 'Собственное сглаживание игры')),
+                 ('fxaa', ('FXAA2_GS', 'FXAA2_GS')),
+                 ('smaa', ('SMAA 1x (without an upscaler)', 'SMAA 1x (без апскейлера)')),
+                 ('off', ('Off', 'Выключено'))]
 LODS = [('0', ('As in the game', 'Как в игре')), ('-2', ('Highest (−2)', 'Максимальная (−2)')),
         ('1', ('Lower (1)', 'Ниже (1)')), ('2', ('Lowest (2)', 'Минимальная (2)'))]
 # 120 and 144: 90 FPS++ with its values for that rate (scripts/patches.py SCALED_FPS). Unlocked froze
@@ -1722,6 +1730,8 @@ class Launcher:
                        'С GitHub FireBurn/Q2RTX (собраны из MIT-исходников AMD FidelityFX), около 45 МБ, '
                        'в папку fsr4_shaders порта.'), top=6)
         self.section(f, _('Detail', 'Детализация'))
+        self.row(f, _('Anti-aliasing', 'Сглаживание'), self.choice(f, 'anti_aliasing', 'ini', ANTI_ALIASING),
+                 _('FXAA2_GS needs a restart; SMAA works without an upscaler.', 'FXAA2_GS: после перезапуска; SMAA: без апскейлера.'))
         self.row(f, _('Model detail (LOD)', 'Детализация моделей'), self.choice(f, 'model_lod', 'ini', LODS),
                  _('A game patch (game version 1.09).', 'Патч игры (версия 1.09).'))
         self.row(f, _('Video memory pressure target', 'Порог видеопамяти'),
