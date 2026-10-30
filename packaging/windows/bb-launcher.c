@@ -118,9 +118,10 @@ static const char* kUpscalerL[] = {"DLSS (NVIDIA GeForce RTX)", "FSR 4 (best qua
 static const char* kPresetV[] = {"0", "1", "2", "3", "4"};
 static const char* kPresetL[] = {"Native AA (x1.0)", "Quality (x1.5)", "Balanced (x1.7)",
                                  "Performance (x2)", "Ultra Performance (x3)"};
-static const char* kOutputV[] = {"1280x720", "1920x1080", "2560x1440", "3840x2160", "1280x800", "1920x1200", "2560x1080", "3440x1440", "5120x1440", "5120x2160", "3840x1600", "3840x1080", "1080x1920", "1024x768", "1280x960", "1440x1080", "1600x1200", "1920x1440"};
+static const char* kOutputV[] = {"1280x720", "1366x768", "1920x1080", "2560x1440", "3840x2160", "1280x800", "1920x1200", "2560x1080", "3440x1440", "5120x1440", "5120x2160", "3840x1600", "3840x1080", "1080x1920", "1024x768", "1280x960", "1440x1080", "1600x1200", "1920x1440"};
 static const char* kOutputL[] = {
     "1280 \xc3""\x97"" 720 (Steam Deck)",
+    "1366 \xc3""\x97"" 768",
     "1920 \xc3""\x97"" 1080",
     "2560 \xc3""\x97"" 1440",
     "3840 \xc3""\x97"" 2160 (4K)",
@@ -183,9 +184,9 @@ static const char* kLangL[] = {
     "Chinese (Simplified)"};
 static const char* kDrawPipeV[] = {"", "1", "0"};
 static const char* kDrawPipeL[] = {"Auto (8+ threads)", "On", "Off (more stable)"};
-static const char* kModeV[] = {"offline", "huntersdream", "coop"};
-static const char* kModeL[] = {"Offline (your own world)", "The Hunter's Dream (online)",
-                               "Seamless co-op (BBSC)"};
+static const char* kModeV[] = {"offline", "coop", "huntersdream"};
+static const char* kModeL[] = {"Offline (your own world)", "Seamless co-op (BBSC)",
+                               "The Hunter's Dream (online)"};
 static const char* kSensV[] = {"5", "7", "10", "13", "16", "20", "30"};
 static const char* kSensL[] = {"0.5x", "0.7x", "1.0x (default)", "1.3x", "1.6x", "2.0x", "3.0x"};
 static const char* kSmoothV[] = {"100", "80", "60", "35"};
@@ -233,6 +234,16 @@ static const char* kVoiceL[] = {
     "Fran\xc3""\xa7""ais",
     "Italiano",
     "\xe6""\x97""\xa5""\xe6""\x9c""\xac""\xe8""\xaa""\x9e"""};
+static const char* kAudioV[] = {"", "2", "6", "8"};
+static const char* kAudioL[] = {
+    "As in Windows",
+    "Stereo (headphones, TV speakers)",
+    "5.1",
+    "7.1"};
+static const char* kPadBackV[] = {"gestures", "effects"};
+static const char* kPadBackL[] = {
+    "Gestures (default)",
+    "Personal Effects"};
 static const char* kNpcV[] = {"all", "new_dialogue", "hidden"};
 static const char* kNpcL[] = {
     "All NPCs",
@@ -320,6 +331,7 @@ static Field g_fields[] = {
     FLD_FOLDER(PG_GAME, ST_APP, "dlc_dir", "", "DLC folder:"),
     FLD_COMBO(PG_GAME, ST_APP, "language", "", "Text language:", kLangV, kLangL, "1"),
     FLD_COMBO(PG_GAME, ST_APP, "voice_language", "", "Voice language:", kVoiceV, kVoiceL, "auto"),
+    FLD_COMBO(PG_GAME, ST_APP, "audio_channels", "", "Speakers:", kAudioV, kAudioL, ""),
     FLD_TEXT(PG_GAME, ST_APP, "player_name", "Player name:", ""),
     FLD_HEAD(PG_GAME, "Effects"),
     FLD_CHECK(PG_GAME, ST_INI, "effect_chromatic_aberration", "", "Chromatic aberration", "1"),
@@ -370,6 +382,8 @@ static Field g_fields[] = {
     FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_invert_y", "", "Invert the vertical axis", "0"),
     FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_menu", "", "Mouse in the menus", "1"),
     FLD_CHECK(PG_CONTROLS, ST_INI, "mouse_hide_cursor", "", "Hide the mouse cursor in the game", "0"),
+    FLD_CHECK(PG_CONTROLS, ST_INI, "overlay_pad_shortcut", "", "L3 + R3 opens the in-game menu", "1"),
+    FLD_COMBO(PG_CONTROLS, ST_INI, "pad_back", "", "Xbox View button:", kPadBackV, kPadBackL, "gestures"),
     FLD_COMBO(PG_CONTROLS, ST_INI, "mouse_sensitivity", "", "Mouse camera speed:", kSensV, kSensL, "10"),
     FLD_COMBO(PG_CONTROLS, ST_INI, "move_smoothing", "", "Movement smoothing:", kSmoothV, kSmoothL, "60"),
     /* Online */
@@ -753,6 +767,7 @@ static int apply_env(void) {
     cfg_get_str("fullscreen_mode", v, sizeof(v), "borderless");
     set_env("BB_FULLSCREEN_MODE", v[0] ? v : "borderless");
     if (cfg_get_str("display", v, sizeof(v), "") && v[0]) set_env("BB_DISPLAY", v);
+    if (cfg_get_str("audio_channels", v, sizeof(v), "") && v[0]) set_env("BB_AUDIO_CHANNELS", v);
     if (cfg_get_str("player_name", v, sizeof(v), "")) {
         char* b = v;
         while (*b == ' ') ++b;
@@ -2166,7 +2181,7 @@ static void online_refresh(void) {
 
 static void online_apply_pool(void) {
     int sel = (int)SendMessageA(field_by_key("play_mode")->hwnd, CB_GETCURSEL, 0, 0);
-    int bit = sel == 1 ? 1 : sel == 2 ? 2 : 0;
+    int bit = sel == 1 ? 2 : sel == 2 ? 1 : 0; /* offline, co-op, The Hunter's Dream */
     for (int i = 0; i < g_pool_n; ++i) ShowWindow(g_pool_ctl[i], (g_pool_mask[i] & bit) ? SW_SHOW : SW_HIDE);
 }
 
@@ -3261,6 +3276,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     g_main = CreateWindowA("BbLauncher", "Bloodborne", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
                            WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left,
                            rc.bottom - rc.top, NULL, NULL, inst, NULL);
+    /* The Hunter's Dream is off (its server refuses this client, as for the Python launcher):
+     * the play mode list ends before it unless BB_HUNTERS_DREAM=1. */
+    {
+        const char* thd = getenv("BB_HUNTERS_DREAM");
+        if (!thd || strcmp(thd, "1") != 0) field_by_key("play_mode")->n = 2;
+    }
     build_ui();
     load_fields();
     online_apply_pool();

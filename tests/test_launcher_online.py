@@ -12,7 +12,7 @@ SCRIPT = ROOT / 'scripts' / 'launcher_online.py'
 
 
 def run(*args, appdata=None):
-    env = dict(os.environ)
+    env = dict(os.environ, BB_HUNTERS_DREAM='1')   # off by default since 2.2 (the server refuses the client)
     if appdata:
         env['APPDATA'] = str(appdata)
     done = subprocess.run([sys.executable, '-I', str(SCRIPT), *map(str, args)], stdout=subprocess.PIPE,

@@ -41,7 +41,7 @@ OPTION_LISTS = {
     'vram_budget_mb': 'VRAM_BUDGETS', 'frame_gen': 'FRAME_GENERATION',
     'frame_gen_multiplier': 'FRAME_GEN_MULTIPLIERS', 'hud_position': 'HUD_POSITIONS',
     'fullscreen_mode': 'FULLSCREEN_MODES', 'display': 'DISPLAYS', 'voice_language': 'VOICE_LANGUAGES',
-    'atlas_npc_mode': 'ATLAS_NPC_MODES',
+    'atlas_npc_mode': 'ATLAS_NPC_MODES', 'audio_channels': 'AUDIO_CHANNELS', 'pad_back': 'PAD_BACK',
 }
 # Lists the C launcher keeps shorter on purpose: key -> the values it leaves out.
 SHORTER_LISTS = {}
