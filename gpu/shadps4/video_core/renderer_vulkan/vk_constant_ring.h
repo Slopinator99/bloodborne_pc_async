@@ -9,6 +9,8 @@
 
 #include <array>
 #include <atomic>
+#include <map>
+#include <optional>
 
 #include "common/assert.h"
 #include "common/types.h"
@@ -45,7 +47,37 @@ public:
                 return std::nullopt;
             }
         }
+        // Copies read again by later packets (Reuse): their 64 KiB are overwritten only once the
+        // GPU is past the last packet that read them.
+        while (!holds.empty() && (holds.begin()->first << 16) + Capacity < at + size) {
+            if (retired < holds.begin()->second) {
+                Retire();
+                if (retired < holds.begin()->second) {
+                    return std::nullopt;
+                }
+            }
+            holds.erase(holds.begin());
+        }
         position = at + size;
+        last_at = at;
+        return at % Capacity;
+    }
+
+    /// Stage A: where (a monotonic position) the last Allocate put its bytes.
+    [[nodiscard]] u64 LastAllocated() const noexcept {
+        return last_at;
+    }
+
+    /// Stage A: the bytes an earlier Allocate put at monotonic position `at`, read again by the
+    /// packet being collected (BB_RING_DEDUP: the same guest bytes, unchanged). Their region is
+    /// then held until the GPU is past a stamp ending after the current position, i.e. past this
+    /// packet. Nullopt when they are too old (a quarter of the ring back).
+    std::optional<u64> Reuse(u64 at, u64 size) {
+        if (at + size > position || at + Capacity / 4 < position) {
+            return std::nullopt;
+        }
+        u64& until = holds[at >> 16];
+        until = std::max(until, position + 1);
         return at % Capacity;
     }
 
@@ -108,6 +140,10 @@ private:
     VideoCore::Buffer buffer;
     u64 position = 0;     ///< stage A
     u64 retired = 0;      ///< stage A: the GPU is done with everything before this
+    u64 last_at = 0;      ///< stage A: LastAllocated
+    /// Stage A (Reuse): 64 KiB of the ring (monotonic position >> 16) -> the position `retired`
+    /// must pass before they are overwritten.
+    std::map<u64, u64> holds;
     u64 pending_end = 0, pending_tick = 0, last_published = 0; ///< stage B
     std::array<StampEntry, 1024> stamps{};
     alignas(64) std::atomic<u64> stamps_head{0}; ///< stage B writes

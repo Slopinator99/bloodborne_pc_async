@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <xxhash.h>
+#include <chrono>
 #include <cmath>
 #include <mutex>
 #include <set>
@@ -504,6 +505,87 @@ bool Rasterizer::PendingWriteOverlaps(VAddr address, u64 size) {
     return false;
 }
 
+namespace {
+/// Constants already in the ring with the same bytes are bound there again instead of copied
+/// over the bus once more (upstream bbport 0.7, on by default; BB_RING_DEDUP=0 off).
+bool RingDedupOn() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_RING_DEDUP");
+        return !(env && env[0] == '0');
+    }();
+    return on;
+}
+} // namespace
+
+bool Rasterizer::CopyRingDeduplicated(
+    u32 index, VAddr address, u64 size, u64 alignment,
+    boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out) {
+    // The last copy of each (address, size), direct-mapped; hashed with 128 bits (equal bytes).
+    struct Slot {
+        VAddr address = 0;
+        u64 size = 0;
+        XXH128_hash_t hash{};
+        u64 at = 0; ///< monotonic ring position
+    };
+    // On the heap: static TLS is reserved on every thread's stack.
+    thread_local auto slots = std::make_unique<std::array<Slot, 8192>>();
+    thread_local auto by_content = std::make_unique<std::array<Slot, 8192>>();
+    thread_local auto bytes =
+        std::make_unique<std::array<u8, VideoCore::BufferCache::STREAM_THRESHOLD>>();
+    thread_local u64 hits = 0, misses = 0, saved = 0, full = 0;
+    thread_local u64 printed_at = 0;
+    if (size > bytes->size()) {
+        return false;
+    }
+    memory->CopySparseMemory(address, bytes->data(), size);
+    const XXH128_hash_t hash = XXH3_128bits(bytes->data(), size);
+    auto& slot =
+        (*slots)[((address * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full)) >> 51];
+    // The same bytes copied for another address (equal constants of other objects): by content.
+    auto& content_slot = (*by_content)[hash.low64 >> 51];
+    std::optional<u64> offset;
+    if (slot.address == address && slot.size == size && XXH128_isEqual(slot.hash, hash)) {
+        offset = constant_ring->Reuse(slot.at, size);
+    }
+    if (!offset && content_slot.size == size && XXH128_isEqual(content_slot.hash, hash)) {
+        offset = constant_ring->Reuse(content_slot.at, size);
+        if (offset) {
+            slot = content_slot;
+            slot.address = address;
+        }
+    }
+    if (offset) {
+        ++hits;
+        saved += size;
+    } else {
+        offset = constant_ring->Allocate(size, alignment);
+        if (!offset) {
+            ++full;
+            return false;
+        }
+        std::memcpy(constant_ring->Data(*offset), bytes->data(), size);
+        constant_ring->Flush(*offset, size);
+        slot = {address, size, hash, constant_ring->LastAllocated()};
+        content_slot = slot;
+        ++misses;
+    }
+    const u64 now = u64(std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (now - printed_at >= 5) {
+        if (printed_at != 0) {
+            std::printf("Ring dedup (5 s): %llu reused, %llu copied, %llu ring full, %.1f MB/s "
+                        "not written
+",
+                        (unsigned long long)hits, (unsigned long long)misses,
+                        (unsigned long long)full, double(saved) / 5e6);
+        }
+        printed_at = now;
+        hits = misses = saved = full = 0;
+    }
+    out.push_back({index, static_cast<u32>(size), *offset, address});
+    return true;
+}
+
 void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDraw* prepared,
                            boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out) {
     const PreparedStage* prepared_stage = nullptr;
@@ -520,6 +602,10 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
     const u64 alignment = std::max<u64>(instance.StorageMinAlignment(),
                                         instance.UniformMinAlignment());
     const auto copy = [&](u32 index, const void* source, VAddr address, u64 size) {
+        if (!source && address != 0 && RingDedupOn()) {
+            CopyRingDeduplicated(index, address, size, alignment, out);
+            return;
+        }
         const auto offset = constant_ring->Allocate(size, alignment);
         if (!offset) {
             return;

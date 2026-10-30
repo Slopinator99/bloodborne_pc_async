@@ -245,6 +245,10 @@ private:
     struct RingBinding;
     void CollectRingBindings(const Shader::Info& stage, const PreparedDraw* prepared,
                              boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out);
+    /// BB_RING_DEDUP (default on): CollectRingBindings' copy of guest bytes, reusing the ring's
+    /// earlier copy of the same bytes. False: the ring is full, the binding is left to stage B.
+    bool CopyRingDeduplicated(u32 index, VAddr address, u64 size, u64 alignment,
+                              boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out);
     void PrintPipeStats();
     /// The registers of the draw being recorded: stage B's copy there, else Liverpool's.
     const AmdGpu::Regs& Regs() const;
