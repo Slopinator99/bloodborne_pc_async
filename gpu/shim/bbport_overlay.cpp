@@ -557,6 +557,7 @@ bool RestartNeeded() {
                    s.model_lod != s.startup_model_lod ||
                    s.live_resolution != s.startup_live_resolution ||
                    BbSettings::ResolutionNeedsRestart();
+    restart |= s.fxaa_forced != s.startup_fxaa;
     for (int e = 0; e < BbSettings::EffectCount; ++e)
         restart |= !LiveSetting(e) && s.effects[e] != s.startup_effects[e];
     return restart;
@@ -828,7 +829,24 @@ void SettingsTab() {
         }
         ImGui::EndCombo();
     }
+    {
+        // After upstream bbport 0.7: SMAA is live, the game's own AA and FXAA2_GS are patches at start.
+        static constexpr const char* aa_names[BbSettings::AaCount] = {
+            "Auto (the game's, none with an upscaler)", "The game's own", "FXAA2_GS (needs restart)",
+            "Off", "SMAA 1x (without an upscaler)"};
+        const int aa = std::clamp(s.anti_aliasing.load(), 0, BbSettings::AaCount - 1);
+        if (ComboRow("Anti-aliasing", aa_names[aa])) {
+            for (int i = 0; i < BbSettings::AaCount; ++i) {
+                if (ImGui::Selectable(aa_names[i], i == aa)) {
+                    Store(s.anti_aliasing, i, true);
+                    BbSettings::SyncAntiAliasing();
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
     for (int e = 0; e < 8; ++e) {
+        if (e == BbSettings::GameAaEffect) continue; // the combo above
         Checkbox(BbSettings::Effects[e].label, s.effects[e]);
     }
     Hint("Effects are applied through game patches at startup (patches/Bloodborne.xml). Motion blur and dynamic shadows can increase GPU load.");

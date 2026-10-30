@@ -17,6 +17,8 @@
 namespace BbSettings {
 
 namespace {
+/// anti_aliasing was in bbport.ini (Load).
+bool anti_aliasing_seen = false;
 
 const char* Path() {
     const char* env = std::getenv("BB_CONFIG");
@@ -61,6 +63,11 @@ void Set(Values& v, const std::string& key, const std::string& value) {
             if (value == UpscalerName(u)) {
                 v.upscaler = u;
             }
+        }
+    } else if (key == "anti_aliasing") {
+        anti_aliasing_seen = true;
+        for (int m = 0; m < AaCount; ++m) {
+            if (value == AntiAliasingName(m)) v.anti_aliasing = m;
         }
     } else if (key == "frame_gen") {
         for (int g = 0; g < FrameGenCount; ++g) {
@@ -203,6 +210,12 @@ void Load() {
     // The window mode is the launcher's setting, passed at start.
     const char* fullscreen = std::getenv("BB_FULLSCREEN");
     v.fullscreen = fullscreen && fullscreen[0] == '1';
+    // Settings from before anti_aliasing: the game's AA switched off stays off.
+    if (!anti_aliasing_seen && !v.effects[GameAaEffect]) {
+        v.anti_aliasing = AaOff;
+    }
+    SyncAntiAliasing();
+    v.startup_fxaa = v.fxaa_forced;
     v.startup_preset = v.preset;
     v.startup_upscaler = v.upscaler;
     v.startup_object_motion = v.object_motion;
@@ -288,6 +301,7 @@ bool device_lost_now = false; ///< Save() from NoteDeviceLost: FSR 4 is the upsc
 
 void Save() {
     auto& v = Get();
+    SyncAntiAliasing();
     // Choosing FSR 4 again in the menu is the retry: the note goes.
     if (IsFsr4(v.upscaler) && !device_lost_now) v.fsr4_device_lost = false;
     // Lines this function does not write (keys other tools own, such as pc_menu) are kept, once
@@ -308,7 +322,8 @@ void Save() {
                                      "model_lod", "output_res", "live_resolution",
                                      "frame_gen", "frame_gen_multiplier", "frame_gen_fit_display",
                                      "mouse_camera", "mouse_sensitivity", "mouse_invert_y", "mouse_menu",
-                                     "mouse_hide_cursor", "mouse_flick_threshold", "overlay_pad_shortcut"}) {
+                                     "mouse_hide_cursor", "mouse_flick_threshold", "overlay_pad_shortcut",
+                                     "anti_aliasing"}) {
                 ours |= key == name;
             }
             for (int e = 0; e < EffectCount; ++e) ours |= key == Effects[e].key;
@@ -342,6 +357,7 @@ void Save() {
                  int(v.mouse_camera.load()), v.mouse_sensitivity.load(), int(v.mouse_invert_y.load()),
                  int(v.mouse_menu.load()), int(v.mouse_hide_cursor.load()), v.mouse_flick_threshold.load());
     std::fprintf(file, "overlay_pad_shortcut=%d\n", int(v.overlay_pad_shortcut.load()));
+    std::fprintf(file, "anti_aliasing=%s\n", AntiAliasingName(v.anti_aliasing));
     // Read by patches.py at start.
     for (int e = 0; e < EffectCount; ++e) {
         std::fprintf(file, "%s=%d\n", Effects[e].key, int(v.effects[e].load()));
@@ -373,6 +389,20 @@ void NoteDeviceLost() {
 }
 
 // The in-game PC menu (src/pc_menu.c) reads and writes the same settings through these.
+const char* AntiAliasingName(int mode) {
+    static constexpr const char* names[AaCount] = {"auto", "game", "fxaa", "off", "smaa"};
+    return names[std::clamp(mode, 0, AaCount - 1)];
+}
+
+void SyncAntiAliasing() {
+    auto& v = Get();
+    const int mode = v.anti_aliasing.load(std::memory_order_relaxed);
+    const bool upscaling = v.upscaler.load(std::memory_order_relaxed) != UpscalerOff;
+    // FXAA2_GS runs in the game's AA step: the step stays on.
+    v.effects[GameAaEffect] = mode == AaGame || mode == AaFxaa || (mode == AaAuto && !upscaling);
+    v.fxaa_forced = mode == AaFxaa;
+}
+
 namespace {
 // A setting as the in-game PC menu sees it: on/off as 0/1, the upscaler as its index, the
 // output resolution as an index into OutputWidths, live resolution as -1 (auto), 0 or 1, the

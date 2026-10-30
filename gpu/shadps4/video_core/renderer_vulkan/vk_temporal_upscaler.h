@@ -158,6 +158,11 @@ private:
     /// `color` (a texture cache image) at 1080p, the port's output-size UI image otherwise.
     void CaptureHudless(VideoCore::ImageId color);
     void CaptureHudlessUi();
+    /// SMAA wanted on this frame's scene: anti_aliasing=smaa, no upscaler, a 3D scene at the
+    /// game's own size.
+    [[nodiscard]] bool SmaaWanted() const;
+    /// SMAA of the finished scene `color` (RGBA8): the result's image (GENERAL), or null.
+    vk::Image RunSmaa(VideoCore::ImageId color);
     void RunScaled();
     void RunUiOnly(VideoCore::ImageId color, VideoCore::ImageId depth);
     void EnsureUiResources(u32 width, u32 height, vk::Format color, vk::Format depth);
@@ -304,6 +309,11 @@ private:
     vk::UniqueImageView extra_sharpen_view;
     u32 extra_sharpen_width = 0, extra_sharpen_height = 0;
     vk::UniqueImageView ui_storage_view;
+    /// anti_aliasing=smaa without an upscaler (RunSmaa); made on first use.
+    std::unique_ptr<class Smaa> smaa;
+    vk::UniqueImageView smaa_view; ///< UNORM view of the scene image smaa_view_image
+    vk::Image smaa_view_image{};
+    bool smaa_done = false; ///< this frame's SMAA ran (OnDraw)
 };
 
 } // namespace Vulkan

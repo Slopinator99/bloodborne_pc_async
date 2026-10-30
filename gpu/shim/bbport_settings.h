@@ -57,6 +57,14 @@ inline constexpr Effect Effects[] = {
     {"pc_rebirth", "Rebirth in the Nightmare at the Altar of Despair", false},
     {"pc_enhanced_lamps", "Lamps: Level Up and Storage at every lit lamp", false},
 };
+/// The game's own anti-aliasing effect (Effects index), derived from anti_aliasing.
+inline constexpr int GameAaEffect = 4;
+/// Anti-aliasing (anti_aliasing in bbport.ini; after upstream bbport 0.7): auto = the game's own
+/// without an upscaler, none with one (the upscaler anti-aliases; the game's AA before it only
+/// blurs); game; fxaa = the game's AA step running FXAA2_GS (Kyo's patch, at start); off; smaa =
+/// SMAA 1x on the finished scene without an upscaler (vk_smaa.h), the game's AA off.
+enum AntiAliasing : int { AaAuto = 0, AaGame = 1, AaFxaa = 2, AaOff = 3, AaSmaa = 4, AaCount };
+const char* AntiAliasingName(int mode);
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
 inline constexpr int EnhancementCount = 4;
 inline constexpr int FirstEnhancement = EffectCount - EnhancementCount;
@@ -114,6 +122,9 @@ struct Values {
     std::atomic<int> active_render_width{1920}, active_render_height{1080};
     /// Applied at start (patches.py); the menu shows when a restart is needed.
     std::atomic<bool> effects[EffectCount]{};
+    std::atomic<int> anti_aliasing{AaAuto};
+    /// What anti_aliasing comes to (SyncAntiAliasing): FXAA2_GS wanted (a patch at start).
+    std::atomic<bool> fxaa_forced{false};
     std::atomic<int> model_lod{0}; ///< -2 highest .. 2 lowest, 0 the game's
     std::atomic<int> output_res{OutputDefault}; ///< index into OutputWidths
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
@@ -157,9 +168,13 @@ struct Values {
     bool startup_object_motion = true;
     bool startup_effects[EffectCount]{};
     int startup_model_lod = 0;
+    bool startup_fxaa = false;
     int startup_output_res = OutputDefault;
     int startup_live_resolution = 0;
 };
+
+/// effects[GameAaEffect] and fxaa_forced from anti_aliasing and the upscaler.
+void SyncAntiAliasing();
 
 Values& Get();
 

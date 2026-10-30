@@ -574,8 +574,7 @@ bool Rasterizer::CopyRingDeduplicated(
     if (now - printed_at >= 5) {
         if (printed_at != 0) {
             std::printf("Ring dedup (5 s): %llu reused, %llu copied, %llu ring full, %.1f MB/s "
-                        "not written
-",
+                        "not written\n",
                         (unsigned long long)hits, (unsigned long long)misses,
                         (unsigned long long)full, double(saved) / 5e6);
         }

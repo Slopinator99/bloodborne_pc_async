@@ -29,6 +29,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_smaa.h"
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace Vulkan {
@@ -343,6 +344,7 @@ bool TemporalUpscaler::OnFrameStart() {
     ui_phase = false;
     ui_read_barrier = false;
     done_this_frame = false;
+    smaa_done = false;
     frame_gen_captured = false;
     hudless_pending = false;
     ldr_target = {};
@@ -1436,6 +1438,43 @@ void TemporalUpscaler::OnColorTarget(VideoCore::ImageId color) {
     }
 }
 
+bool TemporalUpscaler::SmaaWanted() const {
+    return BbSettings::Get().anti_aliasing.load(std::memory_order_relaxed) == BbSettings::AaSmaa &&
+           !Active() && !scene_targets.Reduced() && camera_motion.Ready();
+}
+
+vk::Image TemporalUpscaler::RunSmaa(VideoCore::ImageId color_id) {
+    auto& color = texture_cache.GetImage(color_id);
+    // Gamma-space RGBA8 (luma edges want it so), sampled through its own UNORM format.
+    if (color.info.pixel_format != vk::Format::eR8G8B8A8Unorm ||
+        !(color.usage_flags & vk::ImageUsageFlagBits::eSampled)) {
+        return {};
+    }
+    if (!smaa) {
+        smaa = std::make_unique<Smaa>(instance, scheduler);
+    }
+    scheduler.EndRendering();
+    if (smaa_view_image != color.GetImage()) {
+        const auto device = instance.GetDevice();
+        if (smaa_view) {
+            scheduler.DeferOperation([view = std::move(smaa_view)]() mutable {});
+        }
+        smaa_view = Check(device.createImageViewUnique({
+            .image = color.GetImage(), .viewType = vk::ImageViewType::e2D,
+            .format = vk::Format::eR8G8B8A8Unorm,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        }));
+        smaa_view_image = color.GetImage();
+    }
+    runtime.Transit(&color, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                    vk::AccessFlagBits2::eShaderRead);
+    runtime.FlushBarriers();
+    return smaa->Record(*smaa_view, vk::ImageLayout::eGeneral, color.info.size.width,
+                        color.info.size.height)
+               ? smaa->Output()
+               : vk::Image{};
+}
+
 bool TemporalUpscaler::IsUiShader(u64 vs_hash) const {
     return vs_hash == ui_trigger_vs || UiComposition::MovieShader(vs_hash);
 }
@@ -1443,6 +1482,29 @@ bool TemporalUpscaler::IsUiShader(u64 vs_hash) const {
 void TemporalUpscaler::OnDraw(u64 vs_hash, VideoCore::ImageId color,
                               VideoCore::ImageId depth) {
     if (!Scaled() && vs_hash == ui_trigger_vs) {
+        // anti_aliasing=smaa: SMAA's result goes back into the scene before the frame's first UI
+        // draw. That draw may write only the stencil (no colour target): the scene is the colour
+        // target the frame drew last.
+        if (!smaa_done && ldr_target && (!color || color == ldr_target) && SmaaWanted()) {
+            if (const vk::Image smoothed = RunSmaa(ldr_target)) {
+                auto& image = texture_cache.GetImage(ldr_target);
+                runtime.Transit(&image, vk::ImageLayout::eTransferDstOptimal,
+                                vk::PipelineStageFlagBits2::eCopy,
+                                vk::AccessFlagBits2::eTransferWrite);
+                runtime.FlushBarriers();
+                const vk::ImageCopy region{
+                    .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                    .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                    .extent = {image.info.size.width, image.info.size.height, 1},
+                };
+                scheduler.Record([smoothed, target = image.GetImage(),
+                                  region](vk::CommandBuffer cmd) {
+                    cmd.copyImage(smoothed, vk::ImageLayout::eGeneral, target,
+                                  vk::ImageLayout::eTransferDstOptimal, region);
+                });
+            }
+        }
+        smaa_done = true;
         // The UI starts: its target holds the finished picture without UI (frame generation).
         done_this_frame = true;
         hudless_pending = true;
