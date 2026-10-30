@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import bbport_coop  # noqa: F401  (scripts/launcher_coop.py runs in this runtime and imports it)
+import bbport_bindings  # noqa: F401  (scripts/launcher_input.py: the Controls tab's helper)
 import bbport_launcher_win as launcher
 
 

@@ -58,8 +58,9 @@
 #define WM_FSR4_PROGRESS (WM_APP + 5)   /* wParam: files done, lParam: files in all */
 #define ID_CTL_LIST 5500
 #define ID_CTL_SET 5501
-#define ID_CTL_CLEAR_KEY 5502
-#define ID_CTL_CLEAR_MOUSE 5503
+#define ID_CTL_CLEAR 5502
+#define ID_CTL_SLOT 5503
+#define ID_CTL_RESET 5504
 #define ID_OL_ACCOUNT 5700
 #define ID_OL_SIGNIN 5701
 #define ID_OL_SIGNMSG 5702
@@ -1689,27 +1690,30 @@ static void build_fsr4_group(HWND page, int y) {
 }
 
 /* --- Controls tab: keyboard and mouse bindings ---
- * The game keeps one key and one mouse input per action (src/input_bindings.c) as key_<action>
- * lines of bbport.ini: "key_firearm=X, Mouse2". scripts/launcher_input.py reads and writes those
- * lines (its action table is checked against the game's), bb-keys.h turns a pressed key into the
- * SDL name the game parses. Like the game, giving a key or mouse input to one action takes it
- * from the others. The mouse and movement settings below the list are ordinary fields. Edits are
- * written with the rest of the settings (Save, Play). */
+ * The game keeps up to three bindings per action (src/input_bindings.c) as key_<action> lines of
+ * bbport.ini: "key_firearm=X, Mouse2, WheelUp". A binding is one input, or up to three held
+ * together ("Left Shift+Mouse1"). scripts/launcher_input.py (on launcher/bbport_bindings.py, shared
+ * with the Python launcher) reads and writes those lines; bb-keys.h turns a pressed key into the
+ * SDL name the game parses. Giving a single input to one action takes it from the other actions,
+ * as the game does when it reads bbport.ini (combinations keep their parts). The mouse and
+ * movement settings below the list are ordinary fields. Edits are written with the rest of the
+ * settings (Save, Play). */
 #define CTL_MAX 40
+#define CTL_SLOTS 3
 typedef struct {
-    char name[32], label[48], key[24], mouse[16];
+    char name[32], label[48], bind[CTL_SLOTS][48];
 } Action;
 static Action g_actions[CTL_MAX];
 static int g_action_n, g_ctl_loaded, g_ctl_edited;
 
 static void ctl_show_row(HWND lv, int row) {
-    ListView_SetItemText(lv, row, 1, g_actions[row].key[0] ? g_actions[row].key : "(none)");
-    ListView_SetItemText(lv, row, 2, g_actions[row].mouse[0] ? g_actions[row].mouse : "(none)");
+    for (int s = 0; s < CTL_SLOTS; ++s)
+        ListView_SetItemText(lv, row, 1 + s, g_actions[row].bind[s][0] ? g_actions[row].bind[s] : "-");
 }
 
 static void controls_refresh(void) {
     char args[MAX_PATH + 16], cmd[4 * MAX_PATH];
-    static char out[16384];
+    static char out[24576];
     snprintf(args, sizeof(args), "load \"%s\"", g_ini);
     helper_command("launcher_input.py", args, cmd, sizeof(cmd));
     if (!run_capture(cmd, out, sizeof(out))) {
@@ -1721,9 +1725,9 @@ static void controls_refresh(void) {
     ListView_DeleteAllItems(lv);
     for (char* line = strtok(out, "\n"); line; line = strtok(NULL, "\n")) {
         line[strcspn(line, "\r")] = 0;
-        char* f[5] = {0};
+        char* f[6] = {0};
         int n = 0;
-        for (char* q = line; n < 5;) {
+        for (char* q = line; n < 6;) {
             f[n++] = q;
             char* tab = strchr(q, '\t');
             if (!tab) break;
@@ -1740,10 +1744,9 @@ static void controls_refresh(void) {
             ++g_action_n;
         } else if (!strcmp(f[0], "bind") && n >= 2) {
             for (int i = 0; i < g_action_n; ++i)
-                if (!strcmp(g_actions[i].name, f[1])) {
-                    snprintf(g_actions[i].key, sizeof(g_actions[i].key), "%s", n >= 3 ? f[2] : "");
-                    snprintf(g_actions[i].mouse, sizeof(g_actions[i].mouse), "%s", n >= 4 ? f[3] : "");
-                }
+                if (!strcmp(g_actions[i].name, f[1]))
+                    for (int s = 0; s < CTL_SLOTS; ++s)
+                        snprintf(g_actions[i].bind[s], sizeof(g_actions[i].bind[s]), "%s", n >= 3 + s ? f[2 + s] : "");
         }
     }
     for (int i = 0; i < g_action_n; ++i) ctl_show_row(lv, i);
@@ -1751,48 +1754,78 @@ static void controls_refresh(void) {
     g_ctl_edited = 0;
 }
 
-/* --- the capture window: waits for a key, a mouse button or a wheel turn --- */
-static int g_capture_done, g_capture_is_mouse;
-static char g_capture_name[24];
+/* --- the capture window: waits for a key, a mouse button or a wheel turn. Modifiers held first
+ * (Shift, Ctrl, Alt) join the input into a combination; a modifier pressed and released alone is
+ * itself the binding. --- */
+static int g_capture_done;
+static char g_capture_name[48];
+static char g_cap_mods[2][24];
+static int g_cap_nmods, g_cap_alone;
 
-static void capture_finish(const char* name, int is_mouse) {
+static void capture_finish(const char* name) {
     g_capture_name[0] = 0;
     if (name) snprintf(g_capture_name, sizeof(g_capture_name), "%s", name);
-    g_capture_is_mouse = is_mouse;
     g_capture_done = 1;
 }
 
-static void capture_key(const char* name) {
-    if (!name) {
-        MessageBoxA(g_main, "That key has no name the game knows; pick another one.", "Unsupported key",
-                    MB_OK | MB_ICONWARNING);
-        return;
+/* The held modifiers, then `input` (NULL: the modifiers alone): "Left Shift+Mouse1". */
+static void capture_combine(const char* input) {
+    char text[48] = "";
+    for (int i = 0; i < g_cap_nmods; ++i) {
+        strncat(text, g_cap_mods[i], sizeof(text) - strlen(text) - 1);
+        if (i + 1 < g_cap_nmods || input) strncat(text, "+", sizeof(text) - strlen(text) - 1);
     }
-    capture_finish(name, 0);
+    if (input) strncat(text, input, sizeof(text) - strlen(text) - 1);
+    capture_finish(text);
+}
+
+static int is_modifier_vk(WPARAM vk) {
+    return vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU;
+}
+
+static void capture_modifier_down(LPARAM lp, WPARAM vk) {
+    const char* name = key_name((unsigned)vk, (unsigned)((lp >> 16) & 0xFF), (int)((lp >> 24) & 1));
+    if (!name) return;
+    for (int i = 0; i < g_cap_nmods; ++i)
+        if (!strcmp(g_cap_mods[i], name)) return;
+    if (g_cap_nmods < 2) snprintf(g_cap_mods[g_cap_nmods++], sizeof(g_cap_mods[0]), "%s", name);
+    g_cap_alone = 1;
 }
 
 static LRESULT CALLBACK capture_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     switch (m) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
-        if (wp == VK_ESCAPE) capture_finish(NULL, 0);
-        else capture_key(key_name((unsigned)wp, (unsigned)((lp >> 16) & 0xFF), (int)((lp >> 24) & 1)));
+        if (wp == VK_ESCAPE) {
+            capture_finish(NULL);
+        } else if (is_modifier_vk(wp)) {
+            capture_modifier_down(lp, wp);
+        } else {
+            const char* name = key_name((unsigned)wp, (unsigned)((lp >> 16) & 0xFF), (int)((lp >> 24) & 1));
+            if (!name)
+                MessageBoxA(g_main, "That key has no name the game knows; pick another one.", "Unsupported key",
+                            MB_OK | MB_ICONWARNING);
+            else capture_combine(name);
+        }
         return 0;
-    case WM_LBUTTONDOWN: capture_finish("Mouse1", 1); return 0;
-    case WM_RBUTTONDOWN: capture_finish("Mouse2", 1); return 0;
-    case WM_MBUTTONDOWN: capture_finish("Mouse3", 1); return 0;
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        if (is_modifier_vk(wp) && g_cap_alone && g_cap_nmods) capture_combine(NULL);
+        return 0;
+    case WM_LBUTTONDOWN: capture_combine("Mouse1"); return 0;
+    case WM_RBUTTONDOWN: capture_combine("Mouse2"); return 0;
+    case WM_MBUTTONDOWN: capture_combine("Mouse3"); return 0;
     case WM_XBUTTONDOWN:
-        capture_finish(HIWORD(wp) == XBUTTON1 ? "Mouse4" : "Mouse5", 1);
-        return TRUE;
-    case WM_MOUSEWHEEL: capture_finish((short)HIWORD(wp) > 0 ? "WheelUp" : "WheelDown", 1); return 0;
-    case WM_CLOSE: capture_finish(NULL, 0); return 0;
+        capture_combine(HIWORD(wp) == XBUTTON1 ? "Mouse4" : "Mouse5");
+        return 0;
+    case WM_MOUSEWHEEL: capture_combine((short)HIWORD(wp) > 0 ? "WheelUp" : "WheelDown"); return 0;
+    case WM_CLOSE: capture_finish(NULL); return 0;
     }
     return DefWindowProcA(w, m, wp, lp);
 }
 
-/* Returns 1 with the chosen name in g_capture_name (g_capture_is_mouse says which kind), or 0 when
- * cancelled. */
-static int capture_binding(const Action* a) {
+/* Returns 1 with the chosen binding in g_capture_name, or 0 when cancelled. */
+static int capture_binding(const Action* a, int slot) {
     static int registered;
     HINSTANCE inst = GetModuleHandleA(NULL);
     if (!registered) {
@@ -1803,18 +1836,21 @@ static int capture_binding(const Action* a) {
     }
     RECT r;
     GetWindowRect(g_main, &r);
-    int w = S(330), h = S(110);
+    int w = S(340), h = S(120);
     HWND win = CreateWindowExA(WS_EX_DLGMODALFRAME, "BbCapture", "Set control", WS_POPUP | WS_CAPTION | WS_SYSMENU,
                                r.left + ((r.right - r.left) - w) / 2, r.top + ((r.bottom - r.top) - h) / 2, w, h,
                                g_main, NULL, inst, NULL);
-    char text[200];
+    char text[260];
     snprintf(text, sizeof(text),
-             "Press a key, click a mouse button or turn the wheel for \"%s\".\n\nEsc cancels.", a->label);
-    HWND msg = CreateWindowA("STATIC", text, WS_CHILD | WS_VISIBLE | SS_CENTER, S(10), S(14), S(300), S(60), win,
+             "Binding %d of \"%s\": press a key, click a mouse button or turn the wheel.\n"
+             "Hold Shift, Ctrl or Alt first for a combination.\n\nEsc cancels.", slot + 1, a->label);
+    HWND msg = CreateWindowA("STATIC", text, WS_CHILD | WS_VISIBLE | SS_CENTER, S(10), S(12), S(310), S(80), win,
                              NULL, inst, NULL);
     SendMessageA(msg, WM_SETFONT, (WPARAM)g_font, 1);
     g_capture_done = 0;
     g_capture_name[0] = 0;
+    g_cap_nmods = 0;
+    g_cap_alone = 0;
     EnableWindow(g_main, FALSE);
     ShowWindow(win, SW_SHOW);
     SetForegroundWindow(win);
@@ -1830,17 +1866,19 @@ static int capture_binding(const Action* a) {
     return g_capture_name[0] != 0;
 }
 
-/* One key and one mouse input belong to one action: giving one away takes it from the others, as
- * the game does when it reads bbport.ini. */
-static void ctl_release(const char* value, int is_mouse, int except_row) {
+/* A single input belongs to one action: giving it away takes it from the others' single
+ * bindings, as the game does when it reads bbport.ini. Combinations keep their parts. */
+static void ctl_release(const char* value, int except_row, int except_slot) {
+    if (strchr(value, '+')) return;
     HWND lv = GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST);
-    for (int i = 0; i < g_action_n; ++i) {
-        char* mine = is_mouse ? g_actions[i].mouse : g_actions[i].key;
-        if (i != except_row && !_stricmp(mine, value)) {
-            mine[0] = 0;
-            ctl_show_row(lv, i);
+    for (int i = 0; i < g_action_n; ++i)
+        for (int s = 0; s < CTL_SLOTS; ++s) {
+            char* mine = g_actions[i].bind[s];
+            if (!(i == except_row && s == except_slot) && !_stricmp(mine, value)) {
+                mine[0] = 0;
+                ctl_show_row(lv, i);
+            }
         }
-    }
 }
 
 static int ctl_selected(void) {
@@ -1852,44 +1890,82 @@ static int ctl_selected(void) {
     return row;
 }
 
+static int ctl_slot(void) {
+    int slot = (int)SendMessageA(GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_SLOT), CB_GETCURSEL, 0, 0);
+    return slot >= 0 && slot < CTL_SLOTS ? slot : 0;
+}
+
 static void on_ctl_set(void) {
     int row = ctl_selected();
-    if (row < 0 || !capture_binding(&g_actions[row])) return;
-    Action* a = &g_actions[row];
-    char* slot = g_capture_is_mouse ? a->mouse : a->key;
-    size_t size = g_capture_is_mouse ? sizeof(a->mouse) : sizeof(a->key);
-    ctl_release(g_capture_name, g_capture_is_mouse, row);
-    snprintf(slot, size, "%s", g_capture_name);
+    int slot = ctl_slot();
+    if (row < 0 || !capture_binding(&g_actions[row], slot)) return;
+    ctl_release(g_capture_name, row, slot);
+    snprintf(g_actions[row].bind[slot], sizeof(g_actions[row].bind[slot]), "%s", g_capture_name);
     g_ctl_edited = 1;
     ctl_show_row(GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST), row);
 }
 
-static void on_ctl_clear(int mouse) {
+static void on_ctl_clear(void) {
     int row = ctl_selected();
     if (row < 0) return;
-    (mouse ? g_actions[row].mouse : g_actions[row].key)[0] = 0;
+    g_actions[row].bind[ctl_slot()][0] = 0;
     g_ctl_edited = 1;
     ctl_show_row(GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST), row);
+}
+
+/* A double click on a binding cell binds that slot. */
+static void on_ctl_dblclick(const NMITEMACTIVATE* ia) {
+    LVHITTESTINFO hit = {.pt = ia->ptAction};
+    HWND lv = GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_LIST);
+    ListView_SubItemHitTest(lv, &hit);
+    if (hit.iItem < 0 || hit.iSubItem < 1 || hit.iSubItem > CTL_SLOTS) return;
+    ListView_SetItemState(lv, hit.iItem, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    SendMessageA(GetDlgItem(g_pages[PG_CONTROLS], ID_CTL_SLOT), CB_SETCURSEL, (WPARAM)(hit.iSubItem - 1), 0);
+    on_ctl_set();
+}
+
+static void on_ctl_reset(void) {
+    if (MessageBoxA(g_main, "Put every key and mouse binding back to the game's defaults?", "Bloodborne",
+                    MB_YESNO | MB_ICONQUESTION) != IDYES)
+        return;
+    char args[MAX_PATH + 16], cmd[4 * MAX_PATH];
+    static char out[1024];
+    snprintf(args, sizeof(args), "reset \"%s\"", g_ini);
+    helper_command("launcher_input.py", args, cmd, sizeof(cmd));
+    if (!run_capture(cmd, out, sizeof(out))) {
+        status("Could not reset the key bindings.");
+        return;
+    }
+    controls_refresh();
+    status("Key bindings reset to the defaults.");
 }
 
 /* What the list holds, for the unsaved-changes check. */
 static void controls_state(char* out, size_t n) {
     out[0] = 0;
     size_t used = 0;
-    for (int i = 0; g_ctl_loaded && i < g_action_n && used + 60 < n; ++i)
-        used += (size_t)snprintf(out + used, n - used, "%s=%s,%s;", g_actions[i].name, g_actions[i].key, g_actions[i].mouse);
+    for (int i = 0; g_ctl_loaded && i < g_action_n && used + 200 < n; ++i)
+        used += (size_t)snprintf(out + used, n - used, "%s=%s|%s|%s;", g_actions[i].name, g_actions[i].bind[0],
+                                 g_actions[i].bind[1], g_actions[i].bind[2]);
 }
 
 /* Writes the bindings to bbport.ini when they were edited. Returns 1 when there was nothing to do or
  * it worked. */
 static int controls_save(void) {
     if (!g_ctl_loaded || !g_ctl_edited) return 1;
-    char args[4096], cmd[8192];
+    static char args[8192], cmd[12288];
     static char out[4096];
     int used = snprintf(args, sizeof(args), "save \"%s\"", g_ini);
-    for (int i = 0; i < g_action_n; ++i)
-        used += snprintf(args + used, sizeof(args) - (size_t)used, " \"%s=%s,%s\"", g_actions[i].name, g_actions[i].key,
-                         g_actions[i].mouse);
+    for (int i = 0; i < g_action_n; ++i) {
+        used += snprintf(args + used, sizeof(args) - (size_t)used, " \"%s=", g_actions[i].name);
+        int first = 1;
+        for (int s = 0; s < CTL_SLOTS; ++s) {
+            if (!g_actions[i].bind[s][0]) continue;
+            used += snprintf(args + used, sizeof(args) - (size_t)used, "%s%s", first ? "" : ", ", g_actions[i].bind[s]);
+            first = 0;
+        }
+        used += snprintf(args + used, sizeof(args) - (size_t)used, "\"");
+    }
     helper_command("launcher_input.py", args, cmd, sizeof(cmd));
     if (!run_capture(cmd, out, sizeof(out))) {
         char msg[4200];
@@ -1907,17 +1983,21 @@ static int build_controls_top(HWND page) {
                               LVS_SINGLESEL | LVS_SHOWSELALWAYS, S(6), S(8), S(PAGE_W - 12), S(132), page,
                               (HMENU)(INT_PTR)ID_CTL_LIST, NULL, NULL);
     SendMessageA(lv, WM_SETFONT, (WPARAM)g_font, 1);
-    ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
-    static const char* heads[] = {"Action", "Key", "Mouse"};
-    static const int widths[] = {170, 110, 80};
-    for (int i = 0; i < 3; ++i) {
+    ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+    static const char* heads[] = {"Action", "Binding 1", "Binding 2", "Binding 3"};
+    static const int widths[] = {128, 84, 84, 84};
+    for (int i = 0; i < 4; ++i) {
         LVCOLUMNA col = {.mask = LVCF_TEXT | LVCF_WIDTH, .pszText = (char*)heads[i], .cx = S(widths[i])};
         SendMessageA(lv, LVM_INSERTCOLUMNA, (WPARAM)i, (LPARAM)&col);
     }
-    w_button(page, ID_CTL_SET, "Set...", 6, 146, 70, 23);
-    w_button(page, ID_CTL_CLEAR_KEY, "Clear key", 82, 146, 76, 23);
-    w_button(page, ID_CTL_CLEAR_MOUSE, "Clear mouse", 164, 146, 84, 23);
-    w_label(page, 0, "Select an action, then Set...", 258, 151, 140);
+    w_label(page, 0, "Binding:", 6, 151, 46);
+    static const char* slots[] = {"1", "2", "3"};
+    HWND slot = w_combo(page, ID_CTL_SLOT, 54, 146, 44, slots, 3);
+    SendMessageA(slot, CB_SETCURSEL, 0, 0);
+    w_button(page, ID_CTL_SET, "Set...", 104, 146, 56, 23);
+    w_button(page, ID_CTL_CLEAR, "Clear", 164, 146, 52, 23);
+    w_button(page, ID_CTL_RESET, "Defaults", 220, 146, 62, 23);
+    w_label(page, 0, "Double-click a cell.", 288, 151, 110);
     return 176;
 }
 
@@ -3007,8 +3087,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
         else if (id == ID_PORT_FOLDER) ShellExecuteA(g_main, "open", g_root, NULL, NULL, SW_SHOWNORMAL);
         else if (id == ID_FSR4_DOWNLOAD) on_fsr4_download();
         else if (id == ID_CTL_SET) on_ctl_set();
-        else if (id == ID_CTL_CLEAR_KEY) on_ctl_clear(0);
-        else if (id == ID_CTL_CLEAR_MOUSE) on_ctl_clear(1);
+        else if (id == ID_CTL_CLEAR) on_ctl_clear();
+        else if (id == ID_CTL_RESET) on_ctl_reset();
         else if (id == ID_LOG_COPY) log_copy();
         else if (id == ID_LOG_CLEAR) log_clear();
         else if (id == ID_LOG_OPEN) on_open(2);
@@ -3106,7 +3186,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_NOTIFY: {
         NMHDR* n = (NMHDR*)lp;
-        if (n->idFrom == ID_CTL_LIST && n->code == NM_DBLCLK) on_ctl_set();
+        if (n->idFrom == ID_CTL_LIST && n->code == NM_DBLCLK) on_ctl_dblclick((const NMITEMACTIVATE*)lp);
         if (n->idFrom == ID_TABS && n->code == TCN_SELCHANGE) {
             show_page(TabCtrl_GetCurSel(g_tabs));
             if (TabCtrl_GetCurSel(g_tabs) == PG_GRAPHICS && !g_fsr4_known) fsr4_refresh();

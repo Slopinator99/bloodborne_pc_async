@@ -65,12 +65,13 @@ class KeyNameTests(unittest.TestCase):
         self.assertEqual(names[('16', 'scan2a')], 'Left Shift')
 
     def test_the_games_default_keys_can_all_be_typed(self):
-        """Every default key of the game's table (launcher_input.ACTIONS) has a Windows key."""
+        """Every default key of the game's table (launcher/bbport_bindings.ACTIONS) has a Windows key."""
         import sys
-        sys.path.insert(0, str(ROOT / 'scripts'))
-        import launcher_input
+        sys.path.insert(0, str(ROOT / 'launcher'))
+        import bbport_bindings
         typed = set(self.table().values())
-        defaults = {key for _n, _l, key, _m in launcher_input.ACTIONS if key}
+        defaults = {name for _a, _l, bindings in bbport_bindings.ACTIONS for binding in bindings for name in binding
+                    if name not in bbport_bindings.MOUSE_NAMES}
         self.assertEqual(sorted(defaults - typed), [])
 
 
