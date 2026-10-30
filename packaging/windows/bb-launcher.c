@@ -112,10 +112,11 @@
 #define CHECK_H 18
 
 /* --- option lists: stored value + shown text, the same values bb-runtime stores --- */
-static const char* kUpscalerV[] = {"dlss", "fsr4", "fsr411", "fsr3", "taa", "off"};
+static const char* kUpscalerV[] = {"dlss", "fsr4", "fsr411", "fsr3", "taa", "fsr1", "off"};
 static const char* kUpscalerL[] = {"DLSS (NVIDIA GeForce RTX)", "FSR 4 (best quality)",
                                    "FSR 4.1.1 (needs fsr4_411 assets)", "FSR 3.1 (every GPU)",
-                                   "TAA (native resolution anti-aliasing)", "Off"};
+                                   "TAA (native resolution anti-aliasing)",
+                                   "FSR 1 (spatial, for weak GPUs)", "Off"};
 static const char* kPresetV[] = {"0", "1", "2", "3", "4"};
 static const char* kPresetL[] = {"Native AA (x1.0)", "Quality (x1.5)", "Balanced (x1.7)",
                                  "Performance (x2)", "Ultra Performance (x3)"};

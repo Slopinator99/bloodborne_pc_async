@@ -21,6 +21,7 @@
 #include "video_core/host_shaders/upscale_reactive_comp.h"
 #include "video_core/host_shaders/taa_comp.h"
 #include "video_core/host_shaders/taa_sharpen_comp.h"
+#include "video_core/host_shaders/fsr1_easu_comp.h"
 #include "video_core/host_shaders/taa_sharpen_ldr_comp.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
@@ -237,6 +238,7 @@ bool TemporalUpscaler::Active() const {
            (BbSettings::Get().upscaler == BbSettings::UpscalerFsr3 ||
             BbSettings::IsFsr4(BbSettings::Get().upscaler) ||
             BbSettings::Get().upscaler == BbSettings::UpscalerTaa ||
+            BbSettings::Get().upscaler == BbSettings::UpscalerFsr1 ||
             BbSettings::Get().upscaler == BbSettings::UpscalerDlss) &&
            !BbToggle::Disabled(1u << 24);
 }
@@ -244,7 +246,8 @@ bool TemporalUpscaler::Active() const {
 bool TemporalUpscaler::ReactiveOn() const {
     // FSR 4 takes no reactive mask: the opaque snapshot and the mask pass would be wasted.
     return BbSettings::Get().reactive && !BbToggle::Disabled(1u << 27) && !UseFsr4() && !UseDlss() &&
-           BbSettings::Get().upscaler != BbSettings::UpscalerTaa;
+           BbSettings::Get().upscaler != BbSettings::UpscalerTaa &&
+           !BbSettings::IsSpatial(BbSettings::Get().upscaler);
 }
 
 void TemporalUpscaler::OnSceneColor(VideoCore::ImageId color) {
@@ -299,7 +302,9 @@ bool TemporalUpscaler::OnFrameStart() {
     const int preset = BbSettings::RenderPreset();
     if (applied_preset != preset || settings.upscaler == BbSettings::UpscalerOff) failed = false;
     const bool active = Active();
-    const bool jitter_on = active && settings.jitter && !BbToggle::Disabled(1u << 25);
+    // FSR 1 is spatial: a jittered scene would only shimmer.
+    const bool jitter_on = active && settings.jitter && !BbToggle::Disabled(1u << 25) &&
+                           !BbSettings::IsSpatial(settings.upscaler);
     const int upscaler = settings.upscaler.load();
     const int output = BbSettings::AspectNeedsRestart() ? settings.startup_output_res : settings.output_res.load();
     const bool output_changed = !scaled_session && applied_output != output;
@@ -391,12 +396,14 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
     // DLSS, like FSR 4, has its own context: no portable FSR 3 context is made.
     const bool use_fsr4 = UseFsr4() || UseDlss();
     const bool use_taa = BbSettings::Get().upscaler == BbSettings::UpscalerTaa;
+    const bool use_spatial = BbSettings::IsSpatial(BbSettings::Get().upscaler);
     if (use_taa && (w != ow || h != oh)) {
         std::printf("TAA: remove BB_RENDER_RES to use native-resolution TAA\n");
         return false;
     }
     if (resources_ready && w == width && h == height && ow == out_width && oh == out_height &&
-        hdr == context_hdr && use_fsr4 == resources_fsr4 && use_taa == resources_taa) {
+        hdr == context_hdr && use_fsr4 == resources_fsr4 && use_taa == resources_taa &&
+        use_spatial == resources_spatial) {
         return true;
     }
     const auto device = instance.GetDevice();
@@ -435,7 +442,7 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
     create_info.maxRenderSize = {w, h};
     create_info.maxOutputSize = {ow, oh};
     // FSR 4 has its own model context (vk_fsr4); the images below are shared.
-    if (!use_fsr4 && !use_taa) {
+    if (!use_fsr4 && !use_taa && !use_spatial) {
         if (const u64 issues = ffxVkPortableValidateUpscaleCreateInfo(&create_info)) {
             PrintIssues("create info", issues);
             return false;
@@ -536,6 +543,11 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
     resources_ready = true;
     resources_fsr4 = use_fsr4;
     resources_taa = use_taa;
+    resources_spatial = use_spatial;
+    if (use_spatial) {
+        std::printf("FSR 1: %ux%u -> %ux%u (EASU, then RCAS), no FSR model\n", w, h, ow, oh);
+        return true;
+    }
     if (use_taa) {
         std::printf("TAA: context %ux%u -> %ux%u (%s), no FSR model\n", w, h, ow, oh,
                     hdr ? "HDR scene color" : "tonemapped frame");
@@ -649,6 +661,58 @@ void TemporalUpscaler::CreatePipelines() {
             .addressModeW = vk::SamplerAddressMode::eClampToEdge}));
         taa_pipeline = compute(TAA_COMP, *taa_pipeline_layout);
     }
+    {
+        // EASU: the finished frame (sampled) -> the output image (storage).
+        easu_sampler = Check(device.createSamplerUnique({
+            .magFilter = vk::Filter::eLinear, .minFilter = vk::Filter::eLinear,
+            .mipmapMode = vk::SamplerMipmapMode::eNearest,
+            .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+            .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+            .addressModeW = vk::SamplerAddressMode::eClampToEdge}));
+        const std::array<vk::DescriptorSetLayoutBinding, 2> bindings{{
+            {.binding = 0, .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+             .descriptorCount = 1, .stageFlags = vk::ShaderStageFlagBits::eCompute,
+             .pImmutableSamplers = &*easu_sampler},
+            {.binding = 1, .descriptorType = vk::DescriptorType::eStorageImage,
+             .descriptorCount = 1, .stageFlags = vk::ShaderStageFlagBits::eCompute}}};
+        easu_desc_layout = Check(device.createDescriptorSetLayoutUnique({
+            .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+            .bindingCount = u32(bindings.size()), .pBindings = bindings.data()}));
+        const vk::PushConstantRange push{vk::ShaderStageFlagBits::eCompute, 0,
+                                         6 * sizeof(u32)};
+        easu_pipeline_layout = Check(device.createPipelineLayoutUnique({
+            .setLayoutCount = 1, .pSetLayouts = &*easu_desc_layout,
+            .pushConstantRangeCount = 1, .pPushConstantRanges = &push}));
+        easu_pipeline = compute(FSR1_EASU_COMP, *easu_pipeline_layout);
+    }
+}
+
+void TemporalUpscaler::RecordEasu(vk::CommandBuffer cmdbuf, vk::ImageView color,
+                                  vk::ImageLayout layout, u32 view_w, u32 view_h, u32 size_w,
+                                  u32 size_h, u32 ow, u32 oh) {
+    // The scene's writes visible to the sampled reads.
+    const vk::MemoryBarrier2 inputs{
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+    };
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &inputs});
+    const std::array<vk::DescriptorImageInfo, 2> infos{{
+        {.imageView = color, .imageLayout = layout},
+        {.imageView = *output_view, .imageLayout = vk::ImageLayout::eGeneral}}};
+    std::array<vk::WriteDescriptorSet, 2> writes{};
+    writes[0] = {.dstBinding = 0, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                 .pImageInfo = &infos[0]};
+    writes[1] = {.dstBinding = 1, .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eStorageImage, .pImageInfo = &infos[1]};
+    const std::array<u32, 6> push{view_w, view_h, size_w, size_h, ow, oh};
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *easu_pipeline);
+    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *easu_pipeline_layout, 0, writes);
+    cmdbuf.pushConstants(*easu_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                         sizeof(push), push.data());
+    cmdbuf.dispatch((ow + 7) / 8, (oh + 7) / 8, 1);
 }
 
 void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
@@ -1415,14 +1479,17 @@ std::array<u32, 2> TemporalUpscaler::SceneSize(u32 w, u32 h) const {
 }
 
 float TemporalUpscaler::SceneMipBias() const {
-    if (!Active() || BbSettings::Get().upscaler == BbSettings::UpscalerTaa) return 0.0f;
+    if (!Active() || BbSettings::Get().upscaler == BbSettings::UpscalerTaa ||
+        BbSettings::IsSpatial(BbSettings::Get().upscaler)) return 0.0f;
     const float render = float(BbSettings::Get().active_render_width.load());
     const float output = float(Scaled() ? target_width : 1920u);
     return render > 0.0f && render < output ? std::log2(render / output) : 0.0f;
 }
 
 bool TemporalUpscaler::Scaled() const {
-    return scaled_session || target_width != 1920 || target_height != 1080;
+    // FSR 1 upscales the finished frame: the game's post runs at the scene size at 1080p too.
+    return scaled_session || target_width != 1920 || target_height != 1080 ||
+           BbSettings::IsSpatial(BbSettings::Get().upscaler);
 }
 
 void TemporalUpscaler::OnColorTarget(VideoCore::ImageId color) {
@@ -1808,6 +1875,7 @@ void TemporalUpscaler::RunScaled() {
     vk::Image depth_image = depth.GetImage(), color_image = color.GetImage();
     vk::ImageView depth_view{}, color_view{};
     u32 source_width = iw, source_height = ih;
+    vk::ImageLayout color_layout = vk::ImageLayout::eGeneral;
     if (!scaled_session) {
         VideoCore::ImageViewInfo ci, di;
         ci.format = color.info.pixel_format;
@@ -1816,6 +1884,7 @@ void TemporalUpscaler::RunScaled() {
         const auto dp = scene_targets.Read(camera_motion.Depth(), di);
         color_image = cp.image;
         color_view = cp.view;
+        color_layout = cp.layout;
         depth_image = dp.image;
         depth_view = dp.view;
         source_width = w;
@@ -1858,7 +1927,10 @@ void TemporalUpscaler::RunScaled() {
     barrier(vk::Image(motion_image), vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eUndefined,
             all, vk::AccessFlagBits2::eNone, vk::ImageLayout::eGeneral,
             vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite);
-    camera_motion.RecordMotion(cmdbuf, depth_view, *motion_view, w, h);
+    const bool spatial = BbSettings::IsSpatial(BbSettings::Get().upscaler);
+    if (!spatial) { // FSR 1 takes no motion vectors
+        camera_motion.RecordMotion(cmdbuf, depth_view, *motion_view, w, h);
+    }
     barrier(vk::Image(motion_image), vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eGeneral,
             vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
             vk::ImageLayout::eGeneral, all, vk::AccessFlagBits2::eShaderRead);
@@ -1871,13 +1943,15 @@ void TemporalUpscaler::RunScaled() {
     last_frame = now;
 
     // bbport: FSR 4 writes its HDR-format output, copied into the output-size UI image.
-    if (UseFsr4() || UseDlss() || BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
+    if (UseFsr4() || UseDlss() || spatial || BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
         barrier(vk::Image(output_image), vk::ImageAspectFlagBits::eColor,
                 vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
                 vk::ImageLayout::eGeneral, all, rw);
         bool ok4 = true;
         if (BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
             RecordTaa(cmdbuf, color_view, depth_view);
+        } else if (spatial) {
+            RecordEasu(cmdbuf, color_view, color_layout, w, h, source_width, source_height, ow, oh);
         } else if (UseDlss()) {
             ok4 = RecordDlss(cmdbuf,
                              {color_image, color_view, color.info.pixel_format,

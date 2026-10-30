@@ -128,6 +128,7 @@ add_host_shader(upscale_merge.comp upscale_merge_comp)
 add_host_shader(upscale_reactive.comp upscale_reactive_comp)
 add_host_shader(taa.comp taa_comp)
 add_host_shader(taa_sharpen.comp taa_sharpen_comp)
+add_host_shader(fsr1_easu.comp fsr1_easu_comp)
 add_host_shader(taa_sharpen.comp taa_sharpen_ldr_comp LDR_OUTPUT=1)
 # SMAA 1x for anti_aliasing=smaa (renderer_vulkan/vk_smaa.cpp; third_party/smaa, MIT).
 add_host_shader(smaa.comp smaa_edges_comp PASS=0)

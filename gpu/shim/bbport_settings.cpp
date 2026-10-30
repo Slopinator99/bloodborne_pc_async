@@ -555,7 +555,7 @@ const char* FrameGenName(int frame_gen) {
 }
 
 const char* UpscalerName(int upscaler) {
-    static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa", "dlss"};
+    static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa", "dlss", "fsr1"};
     return names[std::clamp(upscaler, 0, UpscalerCount - 1)];
 }
 

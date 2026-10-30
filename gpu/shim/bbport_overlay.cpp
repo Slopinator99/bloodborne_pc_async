@@ -611,7 +611,8 @@ void SettingsTab() {
     PageTitle("Visual settings");
     Section("Temporal upscaling");
     static const char* upscalers[] = {"Off", "FSR 3.1", "FSR 4 (INT8)", "FSR 4.1.1 (INT8)",
-                                     "TAA (native anti-aliasing)", "DLSS (NVIDIA RTX)"};
+                                     "TAA (native anti-aliasing)", "DLSS (NVIDIA RTX)",
+                                     "FSR 1 (spatial, weak GPUs)"};
     static const char* later[] = {"XeSS"};
     int upscaler = s.upscaler;
     if (ComboRow("Upscaler", upscalers[upscaler])) {
@@ -887,7 +888,8 @@ void ImageToolsTab() {
         Hint("Provider checks for FSR 4. These changes apply immediately.");
     }
     const bool temporal = s.upscaler != BbSettings::UpscalerOff &&
-                          s.upscaler != BbSettings::UpscalerTaa;
+                          s.upscaler != BbSettings::UpscalerTaa &&
+                          !BbSettings::IsSpatial(s.upscaler);
     ImGui::BeginDisabled(!temporal);
     Checkbox("Reactive mask", s.reactive);
     ImGui::BeginDisabled(!s.reactive);
@@ -1603,6 +1605,7 @@ void FpsCounter() {
                 : s.upscaler == BbSettings::UpscalerFsr411 ? "FSR 4.1.1"
                 : s.upscaler == BbSettings::UpscalerTaa ? "TAA"
                 : s.upscaler == BbSettings::UpscalerDlss ? "DLSS"
+                : s.upscaler == BbSettings::UpscalerFsr1 ? "FSR 1"
                                                          : "");
     ImGui::End();
 }

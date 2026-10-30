@@ -276,6 +276,7 @@ private:
     bool resources_ready = false; ///< images below match width/height/out size
     bool resources_fsr4 = false;  ///< made for FSR 4 (no FSR 3 context)
     bool resources_taa = false;
+    bool resources_spatial = false;
     std::unique_ptr<Fsr4Upscaler> fsr4;
     bool fsr4_failed = false;
     bool dlss_failed = false;
@@ -300,6 +301,13 @@ private:
     vk::UniqueDescriptorSetLayout taa_desc_layout;
     vk::UniquePipelineLayout taa_pipeline_layout;
     vk::UniquePipeline taa_pipeline;
+    // FSR 1 (upscaler fsr1): EASU, then the RCAS pass above (ExtraSharpen).
+    vk::UniqueSampler easu_sampler;
+    vk::UniqueDescriptorSetLayout easu_desc_layout;
+    vk::UniquePipelineLayout easu_pipeline_layout;
+    vk::UniquePipeline easu_pipeline;
+    void RecordEasu(vk::CommandBuffer cmdbuf, vk::ImageView color, vk::ImageLayout layout,
+                    u32 view_w, u32 view_h, u32 size_w, u32 size_h, u32 ow, u32 oh);
     vk::UniqueDescriptorSetLayout taa_sharpen_desc_layout;
     vk::UniquePipelineLayout taa_sharpen_pipeline_layout;
     vk::UniquePipeline taa_sharpen_pipeline;

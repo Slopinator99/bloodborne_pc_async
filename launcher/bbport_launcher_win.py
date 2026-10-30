@@ -310,6 +310,7 @@ UPSCALERS = [('dlss', ('DLSS (NVIDIA GeForce RTX)',)),
              ('fsr411', ('FSR 4.1.1 (needs fsr4_411 assets)', 'FSR 4.1.1 (нужны ассеты fsr4_411)')),
              ('fsr3', ('FSR 3.1 (every GPU)', 'FSR 3.1 (любая видеокарта)')),
              ('taa', ('TAA (native resolution anti-aliasing)', 'TAA (нативное сглаживание)')),
+             ('fsr1', ('FSR 1 (spatial, for weak GPUs)', 'FSR 1 (пространственный, для слабых видеокарт)')),
              ('off', ('Off', 'Выключен'))]
 # Output / render size per upscaling preset (scripts/patches.py PRESET_SCALES).
 PRESET_SCALE_VALUES = [1.0, 1.5, 1.7, 2.0, 3.0]
