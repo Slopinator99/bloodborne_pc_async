@@ -334,6 +334,7 @@ private:
     PipelineCache pipeline_cache;
     std::unique_ptr<DrawPreparation> draw_prep;
     std::unique_ptr<class IndirectGuard> indirect_guard; ///< bbport: indirect dispatch check (lazily)
+    std::unique_ptr<class IndirectDrawGuard> indirect_draw_guard; ///< bbport: lazily
     std::unique_ptr<CameraMotion> camera_motion; // bbport: motion vectors (docs/upscaler.md)
     std::unique_ptr<SceneTargets> scene_targets;
     bool scene_started = false;
@@ -441,6 +442,7 @@ private:
     struct IndexBind {
         vk::Buffer handle;
         u64 offset;
+        u32 size;
         vk::IndexType type;
     } index_bind{};
     /// The direct draw whose vertex/index buffers BindResources may resolve early.

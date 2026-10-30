@@ -31,6 +31,7 @@
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/network/http.h"
+#include "windows_trust.h"
 #include "http_error.h"
 
 #if __has_include(<httplib.h>)
@@ -368,6 +369,8 @@ static const HostOverrideState& GetHostOverrideState() {
 // bbport: The Hunter's Dream backend (gpu/bbnet/thd).
 extern "C" bool bbthd_enabled();
 extern "C" void bbthd_add_game_headers(std::vector<std::pair<std::string, std::string>>* headers);
+extern "C" bool bbthd_blocks(const char* host);
+extern "C" void bbthd_http_answer(const char* host, int status, const char* body, std::size_t size);
 
 bool ApplyHostOverride(std::string& scheme, std::string& host, u16& port, bool& is_secure) {
     const auto& state = GetHostOverrideState();
@@ -895,6 +898,9 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
                          plan.scheme, plan.host);
             }
             cli.enable_server_certificate_verification(verify_server);
+            if (verify_server) {
+                bbnet::TrustWindowsRoots(cli, base_url);
+            }
             if (config_disabled_verify) {
                 LOG_INFO(Lib_Http, "{}://{}: server cert verification disabled by configuration",
                          plan.scheme, plan.host);
@@ -1785,7 +1791,9 @@ int PS4_SYSV_ABI sceHttpSendRequest(int reqId, const void* postData, u64 size) {
         }
     }
 
-    const bool online = EmulatorSettings.IsConnectedToNetwork();
+    // bbport: after The Hunter's Dream refused this build, its requests fail as with no network.
+    const bool online = EmulatorSettings.IsConnectedToNetwork() &&
+                        !(bbthd_enabled() && bbthd_blocks(plan.host.c_str()));
     LOG_INFO(Lib_Http, "reqId={} dispatched to async worker [{} {} {}://{}:{}{}]", reqId,
              online ? "ONLINE" : "OFFLINE", HttpMethodName(plan.method), plan.scheme, plan.host,
              plan.port, plan.path);
@@ -1800,6 +1808,11 @@ int PS4_SYSV_ABI sceHttpSendRequest(int reqId, const void* postData, u64 size) {
             worker_errno = ORBIS_HTTP_ERROR_RESOLVER_ENODNS;
         } else {
             worker_errno = RunRealHttpRequest(plan, local_res, success_event_bits);
+            if (worker_errno == 0 && bbthd_enabled()) {
+                bbthd_http_answer(plan.host.c_str(), local_res.status_code,
+                                  reinterpret_cast<const char*>(local_res.body.data()),
+                                  local_res.body.size());
+            }
         }
 
         std::lock_guard<std::mutex> lock(g_state.m_mutex);

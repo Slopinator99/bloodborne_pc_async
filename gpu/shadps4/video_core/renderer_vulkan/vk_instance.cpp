@@ -9,6 +9,7 @@
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/types.h"
+#include "bbport_settings.h"
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -18,8 +19,11 @@
 
 #include <vk_mem_alloc.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 
 namespace Vulkan {
 
@@ -251,6 +255,7 @@ void Instance::DeviceLost(const char* where) const {
                          vendors[i].vendorFaultData);
         }
     }
+    BbSettings::NoteDeviceLost();
     UNREACHABLE_MSG("GPU device lost");
 }
 
@@ -321,6 +326,7 @@ bool Instance::CreateDevice() {
 
     // Optional
     maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+    maintenance_6 = add_extension(VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
     maintenance_8 = add_extension(VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
     attachment_feedback_loop = add_extension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
     if (attachment_feedback_loop) {
@@ -421,6 +427,25 @@ bool Instance::CreateDevice() {
                    add_extension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
     const bool calibrated_timestamps =
         TRACY_GPU_ENABLED ? add_extension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) : false;
+    // bbport (Awakenchan 0.9.37 beta 6): VK_NV_low_latency2 for its boost hint alone (Swapchain).
+    // Streamline and OptiScaler add and drive the extension themselves when they are loaded.
+    const auto offered = [&](std::string_view extension) {
+        return std::ranges::find(available_extensions, extension) != available_extensions.end();
+    };
+    const char* boost_env = std::getenv("BB_NV_BOOST");
+    if (boost_env && boost_env[0] == '0') {
+        std::printf("GPU: NVIDIA boost clocks off (BB_NV_BOOST=0)\n");
+    } else if (!offered(VK_NV_LOW_LATENCY_2_EXTENSION_NAME) ||
+               !offered(VK_KHR_PRESENT_ID_EXTENSION_NAME)) {
+        std::printf("GPU: NVIDIA boost clocks unavailable (the driver offers no "
+                    "VK_NV_low_latency2)\n");
+    } else if (const std::string owner = FindLatencyOwner(); !owner.empty()) {
+        std::printf("GPU: NVIDIA boost clocks off (%s is loaded and drives low latency itself)\n",
+                    owner.c_str());
+    } else {
+        low_latency_boost = add_extension(VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
+                            add_extension(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+    }
 
     const auto family_properties = physical_device.getQueueFamilyProperties();
     if (family_properties.empty()) {
@@ -575,6 +600,9 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceMaintenance5FeaturesKHR{
             .maintenance5 = true,
         },
+        vk::PhysicalDeviceMaintenance6FeaturesKHR{
+            .maintenance6 = true,
+        },
         vk::PhysicalDeviceMaintenance8FeaturesKHR{
             .maintenance8 = true,
         },
@@ -649,6 +677,9 @@ bool Instance::CreateDevice() {
     }
     if (!maintenance_5) {
         device_chain.unlink<vk::PhysicalDeviceMaintenance5FeaturesKHR>();
+    }
+    if (!maintenance_6) {
+        device_chain.unlink<vk::PhysicalDeviceMaintenance6FeaturesKHR>();
     }
     if (!maintenance_8) {
         device_chain.unlink<vk::PhysicalDeviceMaintenance8FeaturesKHR>();

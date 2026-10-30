@@ -230,11 +230,9 @@ GraphicsPipeline::GraphicsPipeline(
             .pName = "main",
         });
     } else if (runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs.clip_distance_emulation) {
-        if (!preloading) {
-            const auto& vs = runtime_infos[static_cast<u32>(Shader::SwStage::Vertex)].hw.vs;
-
-            sdata.fragment = Shader::Backend::SPIRV::EmitDiscardFragmentShader(vs.outputs);
-        }
+        // bbport: also when preloading (LoadGraphicsPipeline fills both runtime infos).
+        const auto& vs = runtime_infos[static_cast<u32>(Shader::SwStage::Vertex)].hw.vs;
+        sdata.fragment = Shader::Backend::SPIRV::EmitDiscardFragmentShader(vs.outputs);
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eFragment,
             .module = CompileSPV(sdata.fragment, instance.GetDevice()),
@@ -448,15 +446,16 @@ void GraphicsPipeline::GetVertexInputs(
     for (const auto& attrib : fetch_shader->attributes) {
         const auto step_rate = attrib.GetStepRate();
         const auto buffer = attrib.GetSharp(vs_info);
+        const auto input = Shader::Gcn::GetVertexInputFormat(buffer);
         attributes.push_back(Attribute{
             .location = attrib.semantic,
             .binding = attrib.semantic,
-            .format = LiverpoolToVK::SurfaceFormat(buffer.GetDataFmt(), buffer.GetNumberFmt()),
+            .format = LiverpoolToVK::SurfaceFormat(input.data_format, input.num_format),
             .offset = 0,
         });
         bindings.push_back(Binding{
             .binding = attrib.semantic,
-            .stride = buffer.GetStride(),
+            .stride = input.stride,
             .inputRate = step_rate == InstanceIdType::None ? vk::VertexInputRate::eVertex
                                                            : vk::VertexInputRate::eInstance,
         });

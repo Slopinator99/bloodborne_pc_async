@@ -96,6 +96,20 @@ static u32 MapOutputs(std::span<Shader::OutputMap, 3> outputs, const AmdGpu::VsO
     return num_outputs;
 }
 
+/// bbport: the draw asks for clip distances (emulated in the fragment stage where the profile
+/// needs it); independent of the GPU, so pipelines without a pixel shader save it.
+static bool ClipDistancesInRegs(const AmdGpu::Regs& regs) {
+    // Lowered user clip planes ride the same emulation path as guest-exported distances, so
+    // the fragment side arms whenever the hardware vertex stage lowers them, keeping its input
+    // locations in sync with the shifted vertex outputs.
+    const bool lowers_user_clip_planes =
+        regs.clipper_control.user_clip_plane_enable &&
+        !regs.stage_enable.IsStageEnabled(static_cast<u32>(HwStage::Geometry));
+    return (regs.vs_output_control.clip_distance_enable &&
+            !regs.stage_enable.IsStageEnabled(static_cast<u32>(HwStage::Local))) ||
+           lowers_user_clip_planes;
+}
+
 const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& sel, HwStage stage,
                                                              SwStage l_stage) {
     auto& info = sel.runtime_infos[u32(l_stage)];
@@ -217,17 +231,8 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
         for (u32 i = 0; i < Shader::MaxColorBuffers; i++) {
             info.hw.fs.color_buffers[i] = sel.graphics_key.color_buffers[i];
         }
-        // Lowered user clip planes ride the same emulation path as guest-exported distances, so
-        // the fragment side arms whenever the hardware vertex stage lowers them, keeping its input
-        // locations in sync with the shifted vertex outputs.
-        const bool lowers_user_clip_planes =
-            regs.clipper_control.user_clip_plane_enable &&
-            !regs.stage_enable.IsStageEnabled(static_cast<u32>(HwStage::Geometry));
         info.hw.fs.clip_distance_emulation =
-            ((regs.vs_output_control.clip_distance_enable &&
-              !regs.stage_enable.IsStageEnabled(static_cast<u32>(HwStage::Local))) ||
-             lowers_user_clip_planes) &&
-            profile.needs_clip_distance_emulation;
+            ClipDistancesInRegs(regs) && profile.needs_clip_distance_emulation;
         break;
     }
     case HwStage::Compute: {
@@ -344,6 +349,11 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .needs_unorm_fixup = instance.GetDriverID() == vk::DriverId::eMesaKosmickrisp,
         .needs_clip_distance_emulation = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
         .supports_shader_stencil_export = instance_.IsShaderStencilExportSupported(),
+        // bbport: BB_GCN_NAN=0 translates as before the GCN NaN/Inf rules, for comparison.
+        .gcn_nan_semantics = [] {
+            const char* env = std::getenv("BB_GCN_NAN");
+            return !env || env[0] != '0';
+        }(),
     };
     auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
@@ -788,6 +798,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         CompileTimer timer;
 
         GraphicsPipeline::SerializationSupport sdata{};
+        sdata.clip_distances = ClipDistancesInRegs(*sel.regs);
         it.value() = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
             sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
@@ -1121,7 +1132,14 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
     sel.infos.fill(nullptr);
     sel.modules.fill(nullptr);
 
-    bind_stage(HwStage::Fragment, SwStage::Fragment);
+    if (!bind_stage(HwStage::Fragment, SwStage::Fragment)) {
+        // bbport: no pixel shader: the fragment state (clip distance emulation's discard shader,
+        // sample shading) comes from this draw's registers, not from the previous draw's stage.
+        auto& fs = sel.runtime_infos[static_cast<u32>(SwStage::Fragment)];
+        fs.Initialize(HwStage::Fragment, SwStage::Fragment);
+        fs.hw.fs.clip_distance_emulation =
+            ClipDistancesInRegs(regs) && profile.needs_clip_distance_emulation;
+    }
 
     const auto* fs_info = sel.infos[static_cast<u32>(SwStage::Fragment)];
     key.mrt_mask = fs_info ? fs_info->mrt_mask : 0u;
@@ -1192,17 +1210,35 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
     }
 
     const auto* vs_info = sel.infos[static_cast<u32>(SwStage::Vertex)];
+    // bbport: a vertex buffer table pointer that is null (a crash at the cutscene after Rom and
+    // in normal play) leaves the draw nothing to fetch: skipped. BB_SKIP_NULL_VB_TABLE=0 draws it.
+    static const bool skip_null_table = [] {
+        const char* value = std::getenv("BB_SKIP_NULL_VB_TABLE");
+        return !value || value[0] != '0';
+    }();
+    if (skip_null_table && vs_info && sel.fetch_shader) {
+        for (const auto& attrib : sel.fetch_shader->attributes) {
+            if (!vs_info->UdPointerNull(attrib.sgpr_base)) {
+                continue;
+            }
+            static std::atomic<u32> reports{0};
+            if (!sel.worker && reports.fetch_add(1, std::memory_order_relaxed) < 5) {
+                std::printf("GPU: draw skipped: its vertex buffer table pointer is null\n");
+            }
+            return false;
+        }
+    }
     if (vs_info && sel.fetch_shader && !instance.IsVertexInputDynamicState()) {
         // Without vertex input dynamic state, the pipeline needs to specialize on format.
         // Stride will still be handled outside the pipeline using dynamic state.
         u32 vertex_binding = 0;
         for (const auto& attrib : sel.fetch_shader->attributes) {
-            const auto& buffer = attrib.GetSharp(*vs_info);
+            const auto input = Shader::Gcn::GetVertexInputFormat(attrib.GetSharp(*vs_info));
             ASSERT_MSG(vertex_binding < MaxVertexBufferCount,
                        "Vertex attribute binding count exceeded limit: {} >= {}", vertex_binding,
                        MaxVertexBufferCount);
             key.vertex_buffer_formats[vertex_binding++] =
-                Vulkan::LiverpoolToVK::SurfaceFormat(buffer.GetDataFmt(), buffer.GetNumberFmt());
+                Vulkan::LiverpoolToVK::SurfaceFormat(input.data_format, input.num_format);
         }
     }
 

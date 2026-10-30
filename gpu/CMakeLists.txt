@@ -118,6 +118,7 @@ add_host_shader(ms_image_blit.frag ms_image_blit_frag)
 add_host_shader(ms_image_blit.frag ms_image_blit_msaa_frag SRC_MSAA=1)
 add_host_shader(fault_buffer_process.comp fault_buffer_process_comp)
 add_host_shader(indirect_guard.comp indirect_guard_comp)
+add_host_shader(indirect_draw_guard.comp indirect_draw_guard_comp)
 add_host_shader(fs_tri.vert fs_tri_vert)
 add_host_shader(fsr.comp fsr_easu_comp SAMPLE_EASU=1)
 add_host_shader(fsr.comp fsr_rcas_comp SAMPLE_RCAS=1)
@@ -145,6 +146,35 @@ add_custom_target(host_shaders DEPENDS ${SHADER_HEADERS})
 file(GLOB_RECURSE VIDEO_CORE CONFIGURE_DEPENDS shadps4/video_core/*.cpp)
 file(GLOB_RECURSE RECOMPILER CONFIGURE_DEPENDS shadps4/shader_recompiler/*.cpp)
 list(FILTER VIDEO_CORE EXCLUDE REGEX "renderdoc\\.cpp$")
+
+# Shader build: a fingerprint of the sources that decide what the pipeline cache holds, kept in
+# the cache (vk_pipeline_serialization.cpp). Line ends do not count (CRLF and LF checkouts agree).
+file(GLOB_RECURSE BB_SHADER_BUILD_SOURCES CONFIGURE_DEPENDS
+    shadps4/shader_recompiler/*
+    shadps4/video_core/amdgpu/regs*.h shadps4/video_core/amdgpu/pixel_format.h
+    shadps4/video_core/amdgpu/resource.h
+    shadps4/video_core/renderer_vulkan/vk_pipeline_*.cpp shadps4/video_core/renderer_vulkan/vk_pipeline_*.h
+    shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.*
+    shadps4/video_core/renderer_vulkan/vk_compute_pipeline.*
+    shadps4/video_core/renderer_vulkan/vk_shader_prebuild.*
+    shadps4/video_core/renderer_vulkan/vk_shader_util.*
+    shadps4/common/serdes.h)
+list(SORT BB_SHADER_BUILD_SOURCES)
+set(BB_SHADER_BUILD_HASHES "")
+foreach(source IN LISTS BB_SHADER_BUILD_SOURCES)
+    file(READ "${source}" content)
+    string(REPLACE "\r" "" content "${content}")
+    file(RELATIVE_PATH name "${CMAKE_CURRENT_SOURCE_DIR}" "${source}")
+    string(SHA256 hash "${name}\n${content}")
+    string(APPEND BB_SHADER_BUILD_HASHES "${hash}\n")
+endforeach()
+string(SHA256 BB_SHADER_BUILD "${BB_SHADER_BUILD_HASHES}")
+string(SUBSTRING "${BB_SHADER_BUILD}" 0 16 BB_SHADER_BUILD)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${BB_SHADER_BUILD_SOURCES})
+file(CONFIGURE OUTPUT "${SHADER_INCLUDE}/video_core/shader_build.h"
+    CONTENT "#pragma once\n#define BB_SHADER_BUILD \"@BB_SHADER_BUILD@\"\n" @ONLY)
+list(LENGTH BB_SHADER_BUILD_SOURCES BB_SHADER_BUILD_COUNT)
+message(STATUS "Shader build ${BB_SHADER_BUILD} (from ${BB_SHADER_BUILD_COUNT} sources)")
 set(COMMON
     shadps4/common/decoder.cpp shadps4/common/error.cpp
     shadps4/common/io_file.cpp shadps4/common/native_clock.cpp shadps4/common/number_utils.cpp
@@ -267,9 +297,9 @@ if (WIN32)
     add_library(atrac9 STATIC ${BB_ATRAC9})
     target_compile_options(atrac9 PRIVATE -w)
     set_target_properties(atrac9 PROPERTIES C_STANDARD 99 INTERPROCEDURAL_OPTIMIZATION OFF)
-    add_executable(bb-probe ../src/probe.c ${BB_RUNTIME} ../src/compat_win.c ../src/vulkan_smoke.c
-        ../src/engine_hooks.c ../src/engine_features.c ../src/pc_menu.c ../src/rebirth.c ../src/input_bindings.c ../src/mouse_camera.c ../src/key_prompts.c ../src/menu_pointer.c
-        ../src/occlusion_queries.c ../packaging/windows/bb-probe.rc)
+    add_executable(bb-probe ../src/probe.c ${BB_RUNTIME} ../src/compat_win.c ../src/vulkan_smoke.c ../src/cloth_rate.c
+        ../src/engine_hooks.c ../src/engine_features.c ../src/pc_menu.c ../src/rebirth.c ../src/ending_trace.c ../src/input_bindings.c ../src/mouse_camera.c ../src/key_prompts.c ../src/menu_pointer.c
+        ../src/occlusion_queries.c ../src/wind_pace.c ../src/blur_kernel.c ../src/render_jobs.c ../src/effect_step_gate.c ../src/effect_smooth_steps.c ../src/light_blink.c ../src/water_gate.c ../src/frame_time.c ../packaging/windows/bb-probe.rc)
     target_sources(bb-probe PRIVATE ../src/aspect_ratio.cpp)
     target_compile_definitions(bb-probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     set_target_properties(bb-probe PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
@@ -308,6 +338,9 @@ if (WIN32)
     target_include_directories(trophy-history-test PRIVATE .. ../src)
     target_compile_options(trophy-history-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
     target_link_libraries(trophy-history-test PRIVATE -pthread)
+    add_executable(cloth-rate-test EXCLUDE_FROM_ALL ../tests/test_cloth_rate.c ../src/engine_hooks.c)
+    target_include_directories(cloth-rate-test PRIVATE ../src)
+    target_compile_options(cloth-rate-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
     add_executable(respawn-patch-test EXCLUDE_FROM_ALL ../tests/test_respawn_patch.c)
     target_include_directories(respawn-patch-test PRIVATE ../src)
     target_compile_options(respawn-patch-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
@@ -322,6 +355,33 @@ if (WIN32)
     add_executable(engine-hooks-test EXCLUDE_FROM_ALL ../tests/test_engine_hooks.c ../src/engine_hooks.c)
     target_include_directories(engine-hooks-test PRIVATE ../src)
     target_compile_options(engine-hooks-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    add_executable(wind-pace-test EXCLUDE_FROM_ALL ../tests/test_wind_pace.c ../src/engine_hooks.c)
+    target_include_directories(wind-pace-test PRIVATE ../src)
+    target_compile_options(wind-pace-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    add_executable(blur-kernel-test EXCLUDE_FROM_ALL ../tests/test_blur_kernel.c ../src/blur_kernel.c
+        ../src/engine_hooks.c)
+    target_include_directories(blur-kernel-test PRIVATE ../src)
+    target_compile_options(blur-kernel-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    add_executable(render-jobs-test EXCLUDE_FROM_ALL ../tests/test_render_jobs.c ../src/render_jobs.c
+        ../src/engine_hooks.c)
+    target_include_directories(render-jobs-test PRIVATE ../src)
+    target_compile_options(render-jobs-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    add_executable(effect-step-gate-test EXCLUDE_FROM_ALL ../tests/test_effect_step_gate.c
+        ../src/effect_step_gate.c ../src/effect_smooth_steps.c ../src/engine_hooks.c)
+    target_include_directories(effect-step-gate-test PRIVATE ../src)
+    target_compile_options(effect-step-gate-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    add_executable(light-blink-test EXCLUDE_FROM_ALL ../tests/test_light_blink.c ../src/light_blink.c
+        ../src/engine_hooks.c)
+    target_include_directories(light-blink-test PRIVATE ../src)
+    target_compile_options(light-blink-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    add_executable(water-gate-test EXCLUDE_FROM_ALL ../tests/test_water_gate.c ../src/water_gate.c
+        ../src/engine_hooks.c)
+    target_include_directories(water-gate-test PRIVATE ../src)
+    target_compile_options(water-gate-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    add_executable(frame-time-test EXCLUDE_FROM_ALL ../tests/test_frame_time.c ../src/frame_time.c ../src/wind_pace.c
+        ../src/cloth_rate.c ../src/engine_hooks.c)
+    target_include_directories(frame-time-test PRIVATE ../src)
+    target_compile_options(frame-time-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
     # Issue #6: pread from one thread, lseek + read from another, on one descriptor.
     add_executable(file-offsets-test EXCLUDE_FROM_ALL ../tests/test_file_offsets.c ../src/compat_win.c)
     target_include_directories(file-offsets-test PRIVATE ../src)
@@ -351,9 +411,23 @@ add_executable(stage-point-test EXCLUDE_FROM_ALL ../tests/test_stage_point.cpp)
 target_compile_options(stage-point-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(stage-point-test PRIVATE shim)
 
+add_executable(thd-stop-test EXCLUDE_FROM_ALL ../tests/test_thd_stop.cpp)
+target_compile_options(thd-stop-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(thd-stop-test PRIVATE bbnet/thd)
+target_link_libraries(thd-stop-test PRIVATE -pthread)
+
+add_executable(np-lookup-test EXCLUDE_FROM_ALL ../tests/test_np_lookup.cpp)
+target_compile_options(np-lookup-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_include_directories(np-lookup-test PRIVATE bbnet/include)
+
 add_executable(srt-walker-test EXCLUDE_FROM_ALL ../tests/test_srt_walker.cpp)
 target_compile_options(srt-walker-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(srt-walker-test PRIVATE $<TARGET_PROPERTY:bbgpu,INCLUDE_DIRECTORIES>)
+
+add_executable(hot-pages-test EXCLUDE_FROM_ALL ../tests/test_region_manager_hot_pages.cpp)
+target_compile_options(hot-pages-test PRIVATE -UNDEBUG -Wall -Wextra -Werror -Wno-sign-compare)
+target_include_directories(hot-pages-test PRIVATE $<TARGET_PROPERTY:bbgpu,INCLUDE_DIRECTORIES>)
+target_compile_definitions(hot-pages-test PRIVATE $<TARGET_PROPERTY:bbgpu,COMPILE_DEFINITIONS>)
 
 add_executable(motion-history-test EXCLUDE_FROM_ALL ../tests/test_motion_history.cpp)
 target_compile_options(motion-history-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
@@ -361,6 +435,10 @@ target_include_directories(motion-history-test PRIVATE ..)
 add_executable(motion-shader-test EXCLUDE_FROM_ALL ../tests/test_motion_shaders.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(motion-shader-test PRIVATE shim shadps4 third_party/gcn/include)
 target_link_libraries(motion-shader-test PRIVATE bbgpu)
+add_executable(gcn-nan-test EXCLUDE_FROM_ALL ../tests/test_gcn_nan.cpp ../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(gcn-nan-test PRIVATE shim shadps4 third_party/gcn/include
+    third_party/sirit/externals/SPIRV-Headers/include)
+target_link_libraries(gcn-nan-test PRIVATE bbgpu $<$<BOOL:${WIN32}>:onecore>)
 add_executable(ui-composition-test EXCLUDE_FROM_ALL ../tests/test_ui_composition.cpp)
 target_compile_options(ui-composition-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(ui-composition-test PRIVATE ..)
@@ -402,6 +480,11 @@ add_executable(output-settings-test EXCLUDE_FROM_ALL ../tests/test_output_settin
     shim/bbport_settings.cpp)
 target_include_directories(output-settings-test PRIVATE shim)
 target_compile_options(output-settings-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+
+add_executable(online-settings-test EXCLUDE_FROM_ALL ../tests/test_online_settings.cpp
+    shim/bbport_settings.cpp)
+target_include_directories(online-settings-test PRIVATE shim)
+target_compile_options(online-settings-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 
 if (WIN32)
     add_executable(aspect-thunk-test EXCLUDE_FROM_ALL ../tests/test_aspect_thunk.cpp)

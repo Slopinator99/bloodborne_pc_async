@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <xxhash.h>
+#include <cmath>
 #include <mutex>
 #include <set>
 #include "video_core/renderer_vulkan/ui_composition.h"
@@ -18,6 +19,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_indirect_draw_guard.h"
 #include "video_core/renderer_vulkan/vk_indirect_guard.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -41,6 +43,18 @@ static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
     push_data.yoffset = regs.viewport_control.yoffset_enable ? regs.viewports[0].yoffset : 0.f;
     push_data.yscale = regs.viewport_control.yscale_enable ? regs.viewports[0].yscale : 1.f;
     return push_data;
+}
+
+// Normal clip-space draws use the otherwise unused window offsets for projection
+// jitter. Clip-disabled draws retain their screen-to-clip conversion. Reusing the
+// two floats keeps PushData within Vulkan's guaranteed 128-byte push-constant size.
+static void SetProjectionJitter(Shader::PushData& push, const AmdGpu::Regs& regs,
+                                const std::array<float, 2>& jitter) {
+    if (regs.IsClipDisabled()) return;
+    push.xoffset = std::isfinite(push.xscale) && push.xscale != 0.f
+                       ? jitter[0] / push.xscale : 0.f;
+    push.yoffset = std::isfinite(push.yscale) && push.yscale != 0.f
+                       ? jitter[1] / push.yscale : 0.f;
 }
 
 Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime& runtime_,
@@ -1127,7 +1141,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             });
         }
     }
-    pipeline->BindResources(set_writes, push_data);
     // bbport: jitter geometry drawn with the scene depth, not full-screen passes (a shifted
     // full-screen quad leaves an edge column unwritten).
     draw_jitter = {};
@@ -1135,6 +1148,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
         draw_jitter = upscaler->Jitter();
     }
+    SetProjectionJitter(push_data, regs, draw_jitter);
+    pipeline->BindResources(set_writes, push_data);
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
@@ -1260,16 +1275,32 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         runtime.FlushBarriers();
     }
 
+    // Counts checked on the GPU first (vk_indirect_draw_guard.h), outside the render pass and
+    // before the pipeline's bindings, as for indirect dispatches.
+    vk::Buffer args = buffer->Handle();
+    u64 args_offset = base;
+    if (IndirectDrawGuard::Enabled()) {
+        if (!indirect_draw_guard) {
+            indirect_draw_guard = std::make_unique<IndirectDrawGuard>(instance, scheduler);
+        }
+        scheduler.PauseRendering();
+        if (const auto checked =
+                indirect_draw_guard->CheckArgs(*buffer, base, max_count, stride, is_indexed)) {
+            std::tie(args, args_offset) = *checked;
+        }
+    }
+
     // bbport: screen-space (clip disabled) draws into the upscaler's output-size images.
     push_data.xscale *= target_scale[0];
     push_data.xoffset *= target_scale[0];
     push_data.yscale *= target_scale[1];
     push_data.yoffset *= target_scale[1];
-    pipeline->BindResources(set_writes, push_data);
     draw_jitter = {};
     if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth()) {
         draw_jitter = upscaler->Jitter();
     }
+    SetProjectionJitter(push_data, Regs(), draw_jitter);
+    pipeline->BindResources(set_writes, push_data);
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
@@ -1286,8 +1317,6 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         }
         return;
     }
-    const vk::Buffer args = buffer->Handle();
-    const u64 args_offset = base;
     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
     const u64 counts_offset = count_address != 0 ? count_offset : 0;
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
@@ -1771,6 +1800,58 @@ void Rasterizer::EmitVertexBuffers() {
     });
 }
 
+// bbport: draws whose prepared vertex inputs were stale, reported every 5 s at most.
+static void NoteStaleVertexInputs() {
+    static std::atomic<u64> stale{0};
+    static std::atomic<s64> last_report{0};
+    const u64 count = stale.fetch_add(1, std::memory_order_relaxed) + 1;
+    const s64 now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    s64 last = last_report.load(std::memory_order_relaxed);
+    if ((count != 1 && now - last < 5000) ||
+        !last_report.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
+        return;
+    }
+    std::printf("Vertex inputs: %llu draws in all read their V#s again (the prepared ones were "
+                "stale)\n",
+                static_cast<unsigned long long>(count));
+}
+
+// bbport: the first draws whose vertex attributes have a V# without records (a zeroed V# was a
+// VK_FORMAT_UNDEFINED attribute before BB_NULL_VERTEX_INPUT; an NVIDIA device loss followed).
+static void NoteNullVertexInputs(const GraphicsPipeline* pipeline,
+                                 std::span<const AmdGpu::Buffer> buffers) {
+    static std::atomic<u32> reports{0};
+    if (reports.load(std::memory_order_relaxed) >= 8 ||
+        std::ranges::none_of(buffers, [](const AmdGpu::Buffer& b) { return !b; })) {
+        return;
+    }
+    if (reports.fetch_add(1, std::memory_order_relaxed) >= 8) {
+        return;
+    }
+    const bool fixed = Shader::Gcn::IsNullVertexInput(AmdGpu::Buffer{});
+    std::string list;
+    for (u32 i = 0; i < buffers.size(); ++i) {
+        const auto& b = buffers[i];
+        if (b) {
+            continue;
+        }
+        const auto input = Shader::Gcn::GetVertexInputFormat(b, false);
+        list += fmt::format(" [{}: address {:#x} stride {} format {}/{} -> {}]", i,
+                            u64(b.base_address), u32(b.stride), u32(b.data_format),
+                            u32(b.num_format),
+                            vk::to_string(LiverpoolToVK::TrySurfaceFormat(input.data_format,
+                                                                          input.num_format)));
+    }
+    std::printf("Vertex input: vs %#llx draws %zu attributes, null V#s (no records):%s; %s\n",
+                static_cast<unsigned long long>(
+                    pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash),
+                buffers.size(), list.c_str(),
+                fixed ? "bound as zero float4 from no buffer"
+                      : "bound with their own format (BB_NULL_VERTEX_INPUT=0)");
+}
+
 void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                                       const PreparedDraw* prepared) {
     const auto& regs = Regs();
@@ -1794,6 +1875,13 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                 !BbToggle::Disabled(BbToggle::PreparedResources)
             ? &prepared->vertex
             : nullptr;
+    // bbport: a worker that read the V#s before the game rewrote their table has stale
+    // addresses or strides (stretched polygons across the screen): they are read again then.
+    if (ready && !fetch->SharpsUnchanged(pipeline->GetStage(Shader::SwStage::Vertex),
+                                         ready->buffers)) {
+        NoteStaleVertexInputs();
+        ready = nullptr;
+    }
     if (ready) {
         attributes.assign(ready->attributes, ready->attributes + ready->count);
         bindings.assign(ready->bindings, ready->bindings + ready->count);
@@ -1898,8 +1986,9 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
             host_offsets.push_back(0);
         }
         host_sizes.push_back(buffer.GetSize());
-        host_strides.push_back(buffer.GetStride());
+        host_strides.push_back(Shader::Gcn::GetVertexInputFormat(buffer).stride);
     }
+    NoteNullVertexInputs(pipeline, {guest_buffers.data(), guest_buffers.size()});
 
     v.num_buffers = static_cast<u32>(guest_buffers.size());
 }
@@ -1911,8 +2000,13 @@ void Rasterizer::BindIndexBuffer(u32 index_offset) {
 
 void Rasterizer::EmitIndexBuffer() {
     scheduler.Record([handle = index_bind.handle, offset = index_bind.offset,
-                      type = index_bind.type](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindIndexBuffer(handle, offset, type);
+                      size = index_bind.size, type = index_bind.type,
+                      maint5 = instance.IsMaintenance5Supported()](vk::CommandBuffer cmdbuf) {
+        if (maint5) {
+            cmdbuf.bindIndexBuffer2KHR(handle, offset, size, type);
+        } else {
+            cmdbuf.bindIndexBuffer(handle, offset, type);
+        }
     });
 }
 
@@ -1923,15 +2017,30 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     const bool is_index16 = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16;
     const vk::IndexType index_type = is_index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32;
     const u32 index_size = is_index16 ? sizeof(u16) : sizeof(u32);
-    const VAddr index_address =
-        regs.index_base_address.Address<VAddr>() + index_offset * index_size;
+    const VAddr base_address = regs.index_base_address.Address<VAddr>();
+    const VAddr index_address = base_address + u64(index_offset) * index_size;
 
     // Bind index buffer.
-    const u32 index_buffer_size = regs.num_indices * index_size;
-    const auto [buffer, offset] =
-        buffer_cache.ObtainBuffer(index_address, index_buffer_size, false);
-    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, index_buffer_size);
-    index_bind = {buffer->Handle(), offset, index_type};
+    const u64 requested_size = u64(regs.num_indices) * index_size;
+    const u64 mapped_size =
+        base_address != 0 ? memory->ClampRangeSize(index_address, requested_size) : 0;
+    u32 index_buffer_size = static_cast<u32>(Common::AlignDown(mapped_size, index_size));
+    vk::Buffer index_buffer{};
+    u64 buffer_offset{};
+    if (index_buffer_size != 0) {
+        const auto [buffer, offset] =
+            buffer_cache.ObtainBuffer(index_address, index_buffer_size, false);
+        needs_barrier |= runtime.IsBufferAccessed(buffer, offset, index_buffer_size);
+        index_buffer = buffer->Handle();
+        buffer_offset = offset;
+    } else if (!instance.IsMaintenance6Supported()) {
+        const auto* null_buffer = buffer_cache.GetNullIndexBuffer();
+        index_buffer_size = static_cast<u32>(null_buffer->SizeBytes());
+        needs_barrier |= runtime.IsBufferAccessed(null_buffer, 0, index_buffer_size);
+        bound_buffers.emplace_back(null_buffer, 0, index_buffer_size, false);
+        index_buffer = null_buffer->Handle();
+    }
+    index_bind = {index_buffer, buffer_offset, index_buffer_size, index_type};
 }
 
 void Rasterizer::ResetBindings(bool is_compute) {
@@ -1993,10 +2102,11 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
         return false;
     }
 
-    // Ensure shader only has 2 bound buffers
+    // Ensure shader only has 2 bound buffers (plus optional flatbuf)
     const auto& cs_pgm = CsRegs();
     const auto& info = pipeline->GetStage(Shader::SwStage::Compute);
-    if (cs_pgm.num_thread_x.full != 64 || info.buffers.size() != 2 || !info.images.empty()) {
+    if (cs_pgm.num_thread_x.full != 64 || info.buffers.size() < 2 || info.buffers.size() > 3 ||
+        !info.images.empty()) {
         return false;
     }
 
@@ -2004,6 +2114,9 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline) {
     const auto& desc0 = info.buffers[0];
     const auto& desc1 = info.buffers[1];
     if (!desc0.is_formatted || !desc1.is_formatted || desc0.is_written == desc1.is_written) {
+        return false;
+    }
+    if (info.buffers.size() == 3 && info.buffers[2].buffer_type != Shader::BufferType::Flatbuf) {
         return false;
     }
 
@@ -2046,10 +2159,11 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
         return false;
     }
 
-    // Ensure shader only has 2 bound buffers
+    // Ensure shader only has 2 bound buffers (plus optional flatbuf)
     const auto& cs_pgm = CsRegs();
     const auto& info = pipeline->GetStage(Shader::SwStage::Compute);
-    if (cs_pgm.num_thread_x.full != 64 || info.buffers.size() != 2 || !info.images.empty()) {
+    if (cs_pgm.num_thread_x.full != 64 || info.buffers.size() < 2 || info.buffers.size() > 3 ||
+        !info.images.empty()) {
         return false;
     }
 
@@ -2057,6 +2171,9 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
     const auto& desc0 = info.buffers[0];
     const auto& desc1 = info.buffers[1];
     if (desc0.is_formatted || !desc1.is_formatted || desc0.is_written || !desc1.is_written) {
+        return false;
+    }
+    if (info.buffers.size() == 3 && info.buffers[2].buffer_type != Shader::BufferType::Flatbuf) {
         return false;
     }
 
@@ -3333,10 +3450,9 @@ void Rasterizer::UpdateViewportScissorState() const {
             const auto yoffset = vp_ctl.yoffset_enable ? vp.yoffset : 0.f;
             const auto yscale = vp_ctl.yscale_enable ? vp.yscale : 1.f;
 
-            // bbport: sub-pixel jitter of scene geometry for the temporal upscaler; the same
-            // shift as jittering the projection.
-            viewport.x = (xoffset - xscale) * target_scale[0] + draw_jitter[0];
-            viewport.y = (yoffset - yscale) * target_scale[1] + draw_jitter[1];
+            // Keep coverage bounds fixed; scene jitter is applied to clip positions.
+            viewport.x = (xoffset - xscale) * target_scale[0];
+            viewport.y = (yoffset - yscale) * target_scale[1];
             viewport.width = xscale * 2.0f * target_scale[0];
             viewport.height = yscale * 2.0f * target_scale[1];
         }

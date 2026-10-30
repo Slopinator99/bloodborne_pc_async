@@ -60,12 +60,16 @@ inline constexpr Effect Effects[] = {
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
 inline constexpr int EnhancementCount = 4;
 inline constexpr int FirstEnhancement = EffectCount - EnhancementCount;
+/// Off while playing online (BB_ONLINE=1, but not seamless co-op's BB_COOP=1), whatever
+/// bbport.ini says: the cheats, the free camera and the debug menu (patches.py ONLINE_BLOCKED).
+bool Online();
+bool OnlineBlocked(int effect);
 /// Live output resolutions: the upscaler's output and the UI host targets.
 // Last slot retains a validated custom resolution loaded from the launcher/ini.
 // Wider than 16:9 (2560x1080 .. 5120x1440, 3840x1600, 3840x1080): camera and HUD patched at start
 // (patches.py ultrawide_writes); src/pc_menu.c names them by index.
-inline int OutputWidths[] = {1280,1920,2560,3840,1280,2560,3440,5120,5120,1080,3840,3840,1920,1920};
-inline int OutputHeights[] = {720,1080,1440,2160,800,1080,1440,1440,2160,1920,1600,1080,1200,1080};
+inline int OutputWidths[] = {1280,1920,2560,3840,1280,2560,3440,5120,5120,1080,3840,3840,1920,1366,1920};
+inline int OutputHeights[] = {720,1080,1440,2160,800,1080,1440,1440,2160,1920,1600,1080,1200,768,1080};
 inline constexpr int OutputCount = sizeof(OutputWidths) / sizeof(OutputWidths[0]);
 inline constexpr int OutputCustom = OutputCount - 1;
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
@@ -104,6 +108,9 @@ struct Values {
     /// The cursor stays hidden over the game window, menus included (#88: for mouse-to-pad
     /// tools); the guide menu, the map and text entry still show it.
     std::atomic<bool> mouse_hide_cursor{false};
+    /// L3 + R3 on a controller opens this menu (Insert always does). Off for mods that put a
+    /// move on L3, such as jumping, where L3 + R3 (lock on) opened it mid-fight (#184).
+    std::atomic<bool> overlay_pad_shortcut{true};
     std::atomic<int> active_render_width{1920}, active_render_height{1080};
     /// Applied at start (patches.py); the menu shows when a restart is needed.
     std::atomic<bool> effects[EffectCount]{};
@@ -115,6 +122,11 @@ struct Values {
     /// Why FSR 4 cannot run (assets, device features), or null. Set by the renderer.
     std::atomic<const char*> fsr4_problem{nullptr};
     std::atomic<bool> fsr4_supported{false}, fsr411_supported{false};
+    /// FSR 4 recorded its last frame (the renderer); a device loss then is noted below.
+    std::atomic<bool> fsr4_running{false};
+    /// The GPU was lost while FSR 4 ran (#151: RX 6700 XT, AMD 26.10.1): bbport.ini
+    /// fsr4_device_lost=1, and the next start saves FSR 3.1 instead and says why.
+    std::atomic<bool> fsr4_device_lost{false};
     /// DLSS (bbport_dlss.dll, NVIDIA RTX) is ready, or why not (null before the device exists).
     std::atomic<bool> dlss_supported{false};
     std::atomic<const char*> dlss_problem{nullptr};
@@ -165,6 +177,8 @@ bool ResolutionNeedsRestart();
 bool AspectNeedsRestart();
 /// Writes the file (menu changes).
 void Save();
+/// The GPU was lost: with FSR 4 running, writes fsr4_device_lost=1 for the next start.
+void NoteDeviceLost();
 
 /// Render resolution divisor of a preset (1.0 native, 1.5 quality, ...).
 float PresetScale(int preset);

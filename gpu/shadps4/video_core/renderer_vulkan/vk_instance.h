@@ -142,6 +142,16 @@ public:
         return vk12_features.shaderInt8;
     }
 
+    /// Returns true if VK_KHR_maintenance5 is supported
+    bool IsMaintenance5Supported() const {
+        return maintenance_5;
+    }
+
+    /// Returns true if VK_KHR_maintenance6 is supported
+    bool IsMaintenance6Supported() const {
+        return maintenance_6;
+    }
+
     /// Returns true if VK_KHR_maintenance8 is supported
     bool IsMaintenance8Supported() const {
         return maintenance_8;
@@ -301,6 +311,11 @@ public:
     /// bbport: FSR 4.1.1 (INT8 model passes and VK_VALVE_shader_mixed_float_dot_product).
     bool IsFsr411Supported() const {
         return IsFsr4Int8Supported() && mixed_float_dot_product;
+    }
+
+    /// bbport: VK_NV_low_latency2 is enabled for its boost hint (Swapchain), without Streamline.
+    bool IsLowLatencyBoostEnabled() const {
+        return low_latency_boost;
     }
 
     /// VK_KHR_shader_clock is supported.
@@ -571,6 +586,7 @@ private:
     bool shader_atomic_float2{};
     bool workgroup_memory_explicit_layout{};
     bool maintenance_5{};
+    bool maintenance_6{};
     bool maintenance_8{};
     bool attachment_feedback_loop{};
     bool image_2d_view_of_3d{};
@@ -579,6 +595,7 @@ private:
     bool compute_shader_derivatives{};
     bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
     bool device_fault{};            // bbport: VK_EXT_device_fault (DeviceLost)
+    bool low_latency_boost{};       // bbport: VK_NV_low_latency2 (+ VK_KHR_present_id), boost hint
     bool supports_memory_budget{};
     bool supports_block_texel_view{};
     u64 total_memory_budget{};

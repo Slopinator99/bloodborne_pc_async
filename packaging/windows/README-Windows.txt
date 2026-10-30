@@ -54,8 +54,7 @@ Starting
   C transform, left mouse attack, Shift + left mouse or V strong attack, right mouse firearm,
   Q lock on, arrow keys d-pad, G gestures, T personal effects, Escape menu, hold Left Alt to
   walk. Rebind with key_<action>= lines in bbport.ini (see "Key bindings" below). Choosing
-  Keyboard prompts in the launcher (it imports your own PCBButtons download from Nexus Mods)
-  switches to the keys its images show instead.
+  Keyboard prompts in the launcher switches to the keys its images show instead.
 - In the game's menus the mouse points and clicks; right click goes back. Hold the strong
   attack modifier (Shift, or Ctrl with Keyboard prompts) and click to press the menus' L2 / R2
   buttons instead: modifier + right click is L2, modifier + left click is R2 (for example the
@@ -64,16 +63,25 @@ Starting
   sensitivity (bbport.ini mouse_sensitivity, 10 = 1.0x, 1 to 50). The game's own camera speed
   option changes the controller and the I/J/K/L keys only. "Hide the mouse cursor in the game"
   (mouse_hide_cursor=1) keeps the pointer hidden for mouse-to-controller tools.
+  "L3 + R3 opens the in-game menu" (overlay_pad_shortcut=0 turns it off, for mods that jump
+  with L3) leaves Insert as the way to open it. On an Xbox pad, View / Back is the touchpad: alone it
+  opens Gestures (pad_back=effects: Personal Effects), with the d-pad left or right either one.
 
 Key bindings (bbport.ini)
-- One line per action, key_<action>=<keys>. A key is named as SDL names it ("W", "Left Alt",
-  "Left Shift", "Left Ctrl", "Space", "Return", "Backspace", "Escape", "Tab", "Up", "F1",
-  "Keypad 4"...). Mouse inputs: Mouse1 (left), Mouse2 (right), Mouse3 (middle), Mouse4,
-  Mouse5 (side buttons), WheelUp, WheelDown. An action takes one key and one mouse input,
-  separated by a comma; "none" unbinds it. A key given to one action is taken from any other.
-  Edit bbport.ini with the launcher and the game closed. Example:
+- One line per action, key_<action>=<binding>, <binding>, <binding>. A key is named as SDL
+  names it ("W", "Left Alt", "Left Shift", "Left Ctrl", "Space", "Return", "Backspace",
+  "Escape", "Tab", "Up", "F1", "Keypad 4"...). Mouse inputs: Mouse1 (left), Mouse2 (right),
+  Mouse3 (middle), Mouse4, Mouse5 (side buttons), WheelUp, WheelDown. An action takes up to
+  three bindings, separated by commas; each is one input, or up to three inputs joined with
+  '+' that must all be held ("Left Shift+Mouse1" is Shift and the left button together).
+  "none" unbinds it. A key given to one action is taken from any other; combinations keep
+  their parts, so one modifier can serve several of them. A held combination wins over the
+  plain bindings on its inputs. Edit bbport.ini with the launcher and the game closed, or on
+  the launcher's Settings > Controls > Key bindings page, which captures the keys for you.
+  Example:
     key_walk=Left Alt
     key_firearm=X, Mouse2
+    key_strong_attack=Left Shift+Mouse1
     key_l3=none
 - Actions and their defaults (the PS4 button each one presses in brackets):
     move_forward W, move_back S, move_left A, move_right D (left stick)

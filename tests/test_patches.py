@@ -11,15 +11,16 @@ from pathlib import Path
 
 from patches import (EBOOT_BASE, FIXES, FPS_PRESETS, OUTPUT_SIZE, RESOLUTION_TEMPLATE, SCENE_HEIGHT,
                      SCENE_WIDTH, UI_HEIGHT, UI_WIDTH, compile_patches,
-                     render_size, resolution_writes, scaled_sizes, output_size, effect_patches,
+                     render_size, resolution_writes, scaled_sizes, output_size, effect_patches, is_16_9, ultrawide,
                      validate_patch_requirements, external_patches, external_selection,
                      compile_external, frame_rate_fixes, sprint_fix_enabled, eboot_bytes,
                      eboot_matches_patches, patch_fingerprint, patch_sites, game_app_version,
                      eboot_is_109, SCALED_BASE, SCALED_FPS, SCALED_VALUES, fps_preset, rate_scaled,
-                     eboot_segments, rate_corrections, camera_value, EFFECT_RATE_SITES,
-                     CLOTH_STIFFNESS, CLOTH_LEFT_OUT, CAMERA_FIELDS, frame_steps, preset_writes, with_external,
-                     HEAP_PATCH, HEAP_GUARD, pc_heaps_enabled, site_matches,
-                     HASH_GUARDS, guarded_patches)
+                     eboot_segments, rate_corrections, camera_value, EFFECT_RATE_SITES, EVENT_FRAME_SITES,
+                     CLOTH_STIFFNESS, CLOTH_LEFT_OUT, CLOTH_SUBSTEPS, CLOTH_CAVES, WIND_STEP, WIND_STEP_LOAD, WIND_FORCE_LOAD, WIND_PACE, CAMERA_FIELDS, frame_steps, preset_writes, with_external,
+                     HEAP_PATCH, HEAP_GUARD, pc_heaps_enabled, site_matches, gx_region_writes,
+                     GX_REGION_GUARD, GX_HEAP_GUARD, GX_HEAP_PS4,
+                     HASH_GUARDS, guarded_patches, ONLINE_BLOCKED, online_allowed)
 
 XML = ROOT / 'patches/Bloodborne.xml'
 SEGMENTS = [(0, 0x6000000)]
@@ -95,6 +96,11 @@ class NativeUiTests(unittest.TestCase):
                          ((1916, 1078), (3840, 2160)))
         # TAA is native-only and uses the live host targets.
         self.assertIsNone(scaled_sizes({'output_res': '1280x720', 'upscaler': 'taa', 'preset': '3'}))
+        # 1366x768 is 16:9 to within a pixel: scaled like 720p, native TAA, not ultrawide.
+        self.assertEqual(scaled_sizes({'output_res': '1366x768', 'preset': '1'}), ((910, 512), (1366, 768)))
+        self.assertIsNone(scaled_sizes({'output_res': '1366x768', 'upscaler': 'taa'}))
+        self.assertTrue(is_16_9((1366, 768)) and is_16_9((1920, 1080)))
+        self.assertFalse(is_16_9((1360, 768)) or ultrawide((1366, 768)))
 
 
     def test_arbitrary_aspect_and_native_movie_viewport(self):
@@ -237,6 +243,25 @@ class RateCorrectionTests(unittest.TestCase):
         _, out = self.corrected(120, settings={'effect_rate_fix': '0'})
         self.assertTrue(sites <= dict(out).keys())
 
+    def test_event_waits_keep_the_games_frames(self):
+        # The lists' 0.04 and 1/15 for the EMEVD frame waits and time conditions are dropped:
+        # the Doll's 89-frame kneel wait at the game's 1/30 (#60).
+        sites = {a - EBOOT_BASE for a in EVENT_FRAME_SITES}
+        for preset, fps in ((['60 FPS++'], 60), (['90 FPS++'], 90), (['Uncap FPS++'], None)):
+            with self.subTest(preset=preset):
+                writes = compile_patches(XML, preset, '01.09', SEGMENTS)
+                listed = sites & dict(writes).keys()
+                self.assertTrue(listed)
+                for offset in listed:
+                    self.assertGreater(struct.unpack('<f', dict(writes)[offset])[0], 1 / 30 + 1e-4)
+                with mock.patch.dict('os.environ', {}, clear=True), redirect_stdout(io.StringIO()):
+                    out = rate_corrections(writes, fps, None, {})
+                self.assertFalse(sites & dict(out).keys())
+                for env, settings in (({'BB_EVENT_FRAMES_FIX': '0'}, {}), ({}, {'event_frames_fix': '0'})):
+                    with mock.patch.dict('os.environ', env, clear=True), redirect_stdout(io.StringIO()):
+                        out = rate_corrections(writes, fps, None, settings)
+                    self.assertEqual(listed, sites & dict(out).keys())
+
     def test_cloth_stiffness_and_the_1_0_sites_above_60(self):
         for fps in (120, 144):
             with self.subTest(fps=fps):
@@ -249,6 +274,83 @@ class RateCorrectionTests(unittest.TestCase):
                 self.assertFalse(set(left) & out.keys())
         writes, out = self.corrected(144, env={'BB_CLOTH_FIX': '0'})
         self.assertEqual(dict(out)[CLOTH_STIFFNESS - EBOOT_BASE], dict(writes)[CLOTH_STIFFNESS - EBOOT_BASE])
+
+    @unittest.skipUnless(GAME_ELF.is_file(), 'needs a prepared 1.09 eboot.elf (BB_TEST_EBOOT_ELF)')
+    def test_the_60_90_and_uncapped_lists_get_the_bases_cloth(self):
+        base = dict(compile_patches(XML, [SCALED_BASE], '01.09', SEGMENTS))
+        elf = GAME_ELF.read_bytes()
+        for fps, preset in (('60', ['60 FPS++']), ('90', ['90 FPS++']), ('uncap', ['Uncap FPS++'])):
+            with self.subTest(fps=fps), mock.patch.dict('os.environ', {}, clear=True), \
+                    redirect_stdout(io.StringIO()):
+                out = dict(preset_writes(XML, preset, fps, '01.09', SEGMENTS, elf, {}))
+                self.assertEqual(out[CLOTH_SUBSTEPS - EBOOT_BASE], base[CLOTH_SUBSTEPS - EBOOT_BASE])
+                caves = [o for o in base if CLOTH_CAVES[0] <= o + EBOOT_BASE < CLOTH_CAVES[1]]
+                self.assertEqual(len(caves), 18)
+                self.assertTrue(all(out[o] == base[o] for o in caves))
+                # Uncapped 1, the 60 tuning, until src/cloth_rate.c follows the frame time.
+                stiffness = (60 / int(fps)) ** 2 if fps != 'uncap' else 1.0
+                self.assertEqual(struct.unpack('<4f', out[CLOTH_STIFFNESS - EBOOT_BASE]),
+                                 (struct.unpack('<f', struct.pack('<f', stiffness))[0],) * 4)
+                self.assertFalse(any(lo <= o + EBOOT_BASE < hi for o in out for lo, hi in CLOTH_LEFT_OUT))
+        for fps, preset, env, settings in (('90', ['90 FPS++'], {'BB_CLOTH_FIX': '0'}, {}),
+                                           ('uncap', ['Uncap FPS++'], {'BB_CLOTH_FIX': '0'}, {}),
+                                           ('uncap', ['Uncap FPS++'], {'BB_CLOTH_UNCAPPED': '0'}, {}),
+                                           ('uncap', ['Uncap FPS++'], {}, {'cloth_uncapped': '0'})):
+            with self.subTest(fps=fps, env=env, settings=settings), \
+                    mock.patch.dict('os.environ', env, clear=True), redirect_stdout(io.StringIO()):
+                out = dict(preset_writes(XML, preset, fps, '01.09', SEGMENTS, elf, settings))
+            self.assertNotIn(CLOTH_SUBSTEPS - EBOOT_BASE, out)
+            self.assertNotIn(CLOTH_STIFFNESS - EBOOT_BASE, out)
+        with mock.patch.dict('os.environ', {'BB_CLOTH_UNCAPPED': '0'}, clear=True), redirect_stdout(io.StringIO()):
+            out = dict(preset_writes(XML, ['90 FPS++'], '90', '01.09', SEGMENTS, elf, {}))
+        self.assertIn(CLOTH_SUBSTEPS - EBOOT_BASE, out)  # the fixed rates keep theirs
+
+    @unittest.skipUnless(GAME_ELF.is_file(), 'needs a prepared 1.09 eboot.elf (BB_TEST_EBOOT_ELF)')
+    def test_wind_at_30s_pace_and_bend(self):
+        elf = GAME_ELF.read_bytes()
+        load, force, pace = (a - EBOOT_BASE for a in (WIND_STEP_LOAD, WIND_FORCE_LOAD, WIND_PACE))
+        target = lambda insn, data: insn + 8 + struct.unpack('<i', data[-4:])[0]
+
+        def writes(fps, preset, env=None):
+            with mock.patch.dict('os.environ', env or {}, clear=True), redirect_stdout(io.StringIO()):
+                return dict(preset_writes(XML, preset, fps, '01.09', SEGMENTS, elf, {}))
+        for fps, preset in (('60', ['60 FPS++']), ('90', ['90 FPS++']), ('120', [SCALED_BASE]),
+                            ('144', [SCALED_BASE]), ('uncap', ['Uncap FPS++'])):
+            with self.subTest(fps=fps):
+                out = writes(fps, preset)
+                # The bend: the force weighed by the game's own 1/60, as at 30.
+                self.assertEqual(out[force][:4], bytes.fromhex('c57a1035'))
+                self.assertEqual(target(WIND_FORCE_LOAD, out[force]), WIND_STEP)
+                self.assertEqual(eboot_bytes(elf, WIND_STEP - EBOOT_BASE, WIND_STEP - EBOOT_BASE + 4),
+                                 struct.pack('<f', 1 / 60))
+                self.assertNotIn(WIND_STEP - EBOOT_BASE, out)
+                if fps == 'uncap':  # src/wind_pace.c steps it each frame
+                    self.assertNotIn(load + 4, out)
+                    continue
+                # The pace: 1/60 s of wind each 1/30 s of game time, half a second a second.
+                self.assertEqual(target(WIND_STEP_LOAD, out[load + 4]), WIND_PACE)
+                step = struct.unpack('<f', out[pace])[0]
+                self.assertAlmostEqual(step * int(fps), 0.5, places=6)
+                off = writes(fps, preset, {'BB_WIND_FIX': '0'})
+                self.assertNotIn(force, off)
+                self.assertEqual(off.get(load + 4), None if fps in ('60', '90') else
+                                 dict(compile_patches(XML, preset, '01.09', SEGMENTS))[load + 4])
+
+    def test_wind_left_alone_on_other_code(self):
+        writes = compile_patches(XML, ['90 FPS++'], '01.09', SEGMENTS)
+        for elf in (fake_elf(0, bytes(16)), fake_elf(WIND_STEP - EBOOT_BASE, struct.pack('<2f', 1 / 60, 1 / 30))):
+            with mock.patch.dict('os.environ', {'BB_EVENT_FRAMES_FIX': '0'}, clear=True),                     redirect_stdout(io.StringIO()) as log:
+                self.assertEqual(rate_corrections(writes, 90, elf, {}), writes)
+            self.assertIn('wind left as the list has it', log.getvalue())
+
+    @unittest.skipUnless(GAME_ELF.is_file(), 'needs a prepared 1.09 eboot.elf (BB_TEST_EBOOT_ELF)')
+    def test_wind_left_alone_where_a_list_writes_its_loads(self):
+        elf = GAME_ELF.read_bytes()
+        for site in (WIND_STEP, WIND_FORCE_LOAD, WIND_STEP_LOAD):
+            writes = [(site - EBOOT_BASE, b'\x90')]
+            with self.subTest(site=hex(site)), mock.patch.dict('os.environ', {}, clear=True), \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(rate_corrections(writes, 90, elf, {}), writes)
 
     def test_camera_only_when_asked(self):
         writes, out = self.corrected(144)
@@ -268,10 +370,15 @@ class RateCorrectionTests(unittest.TestCase):
         self.assertEqual(camera_value(0x238, 0.5, 0.5), 0.5)
 
     def test_existing_presets_are_unchanged_by_default(self):
+        # But for their event frame waits (test_event_waits_keep_the_games_frames).
+        events = {a - EBOOT_BASE for a in EVENT_FRAME_SITES}
         for preset, fps in (('60 FPS++', 60), ('90 FPS++', 90), ('Uncap FPS++', None)):
             with self.subTest(preset=preset):
                 writes = compile_patches(XML, [preset], '01.09', SEGMENTS)
                 with mock.patch.dict('os.environ', {}, clear=True), redirect_stdout(io.StringIO()):
+                    self.assertEqual(rate_corrections(writes, fps, None, {}),
+                                     [(o, d) for o, d in writes if o not in events])
+                with mock.patch.dict('os.environ', {'BB_EVENT_FRAMES_FIX': '0'}, clear=True),                         redirect_stdout(io.StringIO()):
                     self.assertEqual(rate_corrections(writes, fps, None, {}), writes)
 
 
@@ -306,8 +413,9 @@ class FrameStepTests(unittest.TestCase):
     def test_sites_in_the_game(self):
         elf = GAME_ELF.read_bytes()
         segments = eboot_segments(elf)
+        # The wind's step (WIND_PACE) is one of them; the wind correction sets it to half the step.
         for preset, fps, count in (('90 FPS++', '90', 95), (SCALED_BASE, '120', 78)):
-            with self.subTest(preset=preset), mock.patch.dict('os.environ', {}, clear=True), \
+            with self.subTest(preset=preset), mock.patch.dict('os.environ', {'BB_WIND_FIX': '0'}, clear=True), \
                     redirect_stdout(io.StringIO()):
                 before = rate_scaled(compile_patches(XML, [preset], '01.09', segments), int(fps)) \
                     if preset == SCALED_BASE else compile_patches(XML, [preset], '01.09', segments)
@@ -413,6 +521,58 @@ def fake_elf(vaddr, code):
     return bytes(header) + code
 
 
+def two_segment_elf(parts):
+    # One PT_LOAD segment per (vaddr, bytes) part.
+    elf = bytearray(0x40 + 56 * len(parts))
+    struct.pack_into('<Q', elf, 0x20, 0x40)
+    struct.pack_into('<HH', elf, 0x36, 56, len(parts))
+    for i, (vaddr, data) in enumerate(parts):
+        struct.pack_into('<IIQQQQQQ', elf, 0x40 + 56 * i, 1, 5, len(elf), vaddr, vaddr, len(data), len(data), 0x1000)
+        elf += data
+    return bytes(elf)
+
+
+class GxRegionTests(unittest.TestCase):
+    # The guards know the game's bytes only by length and hash: stand-in bytes, with guards
+    # made to match them, exercise the same path.
+    REGION = bytes(range(0x30, 0x30 + GX_REGION_GUARD[1]))
+    HEAP = struct.pack('<Q', GX_HEAP_PS4)
+    STANDARD = [(GX_REGION_GUARD[0], REGION), (GX_HEAP_GUARD[0], HEAP + struct.pack('<Q', 0x37600000))]
+
+    def writes(self, parts=None, heaps_written=False, **env):
+        import hashlib
+        check = lambda data: hashlib.sha256(data).hexdigest()[:16]
+        with mock.patch('patches.GX_REGION_GUARD', GX_REGION_GUARD[:2] + (check(self.REGION),)),              mock.patch('patches.GX_HEAP_GUARD', GX_HEAP_GUARD[:2] + (check(self.HEAP),)),              redirect_stdout(io.StringIO()):
+            return gx_region_writes(two_segment_elf(parts or self.STANDARD), heaps_written, env)
+
+    def test_the_region_and_the_heap_grow_together(self):
+        at = GX_REGION_GUARD[0] + GX_REGION_GUARD[1] - 4
+        self.assertEqual(self.writes(), [(at, struct.pack('<I', 256 << 20)),
+                                         (GX_HEAP_GUARD[0], struct.pack('<Q', GX_HEAP_PS4 + (128 << 20)))])
+
+    def test_enlarged_heaps_keep_their_size(self):
+        self.assertEqual(len(self.writes(heaps_written=True)), 1)
+
+    def test_the_switch_sizes_it_within_bounds(self):
+        self.assertEqual(self.writes(BB_GX_REGION_MB='0'), [])
+        self.assertEqual(self.writes(BB_GX_REGION_MB='160'), [])
+        self.assertEqual(self.writes(BB_GX_REGION_MB='224')[0][1], struct.pack('<I', 192 << 20))
+        self.assertEqual(self.writes(BB_GX_REGION_MB='9999')[0][1], struct.pack('<I', 384 << 20))
+
+    def test_a_differing_eboot_is_left_alone(self):
+        other = self.REGION[:-1] + b''
+        self.assertEqual(self.writes([(GX_REGION_GUARD[0], other), self.STANDARD[1]]), [])
+        self.assertEqual(self.writes([self.STANDARD[0], (GX_HEAP_GUARD[0], bytes(16))]), [])
+        self.assertEqual(len(self.writes([self.STANDARD[0], (GX_HEAP_GUARD[0], bytes(16))],
+                                         heaps_written=True)), 1)
+
+    @unittest.skipUnless(GAME_ELF.is_file(), 'needs a prepared 1.09 eboot.elf (BB_TEST_EBOOT_ELF)')
+    def test_guards_match_the_game(self):
+        elf = GAME_ELF.read_bytes()
+        self.assertTrue(site_matches(elf, GX_REGION_GUARD))
+        self.assertTrue(site_matches(elf, GX_HEAP_GUARD))
+
+
 class SprintFixTests(unittest.TestCase):
     def test_blocked_movement_check_divides_by_frame_time(self):
         # The fix knows the game's vmulss only by length and hash (no game bytes here): stand-in
@@ -436,6 +596,33 @@ class SprintFixTests(unittest.TestCase):
             self.assertFalse(sprint_fix_enabled({'sprint_fix': '0'}))
         with mock.patch.dict('os.environ', {'BB_SPRINT_FIX': '0'}):
             self.assertFalse(sprint_fix_enabled({'sprint_fix': '1'}))
+
+
+class OnlineCheatTests(unittest.TestCase):
+    CHEATS = {'cheat_no_death': '1', 'cheat_stealth': '1', 'cheat_silent': '1', 'cheat_rally_no_decay': '1',
+              'debug_menu': '1', 'debug_camera': '1', 'tweak_ragdoll': '1', 'effect_dof': '0'}
+
+    def test_every_cheat_and_debug_patch_is_blocked(self):
+        self.assertEqual(ONLINE_BLOCKED, {'Player No Dead (Read note)', 'Player Stealth (Read note)',
+                                          'Player Silent (Read note)', 'No Rally Decay', 'Enemy Control',
+                                          'Restore Debug Camera', 'Restore Debug Menu (READ NOTES)'})
+        names = {e.get('Name') for e in ET.parse(XML).getroot().iter('Metadata')}
+        self.assertLessEqual(ONLINE_BLOCKED, names)
+
+    def test_offline_and_seamless_coop_keep_them(self):
+        names = effect_patches(self.CHEATS)
+        for env in ({'BB_ONLINE': '0', 'BB_COOP': '0'}, {'BB_ONLINE': '1', 'BB_COOP': '1'}, {'BB_COOP': '1'}):
+            with mock.patch.dict('os.environ', env):
+                self.assertEqual(online_allowed(names), names)
+
+    def test_online_leaves_them_out(self):
+        names = effect_patches(self.CHEATS) + ['Skip Intro', 'Cheat: infinite items']
+        for env in ({'BB_ONLINE': '1'}, {'BB_ONLINE': '1', 'BB_COOP': '0'}):
+            with mock.patch.dict('os.environ', env), redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(online_allowed(names),
+                                 ['Disable DoF', 'DS1-like physics', 'Skip Intro'])
+            self.assertIn('Player No Dead (Read note)', out.getvalue())
+            self.assertIn('Cheat: infinite items', out.getvalue())
 
 
 class DebugPatchTests(unittest.TestCase):

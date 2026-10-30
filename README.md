@@ -13,11 +13,11 @@ and the [shadPS4](https://github.com/shadps4-emu/shadPS4) renderer.
 
 ## Download
 
-From the [latest release](https://github.com/Jgamrot/bloodborne_pc/releases/latest), download
-**[bbport-windows.zip](https://github.com/Jgamrot/bloodborne_pc/releases/latest/download/bbport-windows.zip)**
+From the [latest release](https://github.com/Jgamrot/yharnam-pc/releases/latest), download
+**[bbport-windows.zip](https://github.com/Jgamrot/yharnam-pc/releases/latest/download/bbport-windows.zip)**
 and extract the whole archive. The two **Source code** downloads are for developers. Previews
 of upcoming features are marked *Pre-release* on the
-[releases page](https://github.com/Jgamrot/bloodborne_pc/releases).
+[releases page](https://github.com/Jgamrot/yharnam-pc/releases).
 
 ## Features
 
@@ -71,6 +71,11 @@ the guide. They are made from your own game files at start, which stay unchanged
 **Also**
 - Online play (beta): messages, bloodstains and ghosts through
   [The Hunter's Dream](https://thehuntersdream.com), and co-op through a shadNet server.
+  Cheats, the free camera and the debug menu are off while playing online, whatever the settings say;
+  seamless co-op keeps them, as everyone there chose to play together.
+- Online play (beta): seamless co-op on a server one of the players runs, and online through a
+  private shadNet server. [The Hunter's Dream](https://thehuntersdream.com) is off for now: it
+  doesn't accept this build (#10); `BB_HUNTERS_DREAM=1` shows it again.
 - Death respawns skip the game's fixed 12-second wait.
 - Mods and third-party patches, loaded without changing your game files.
 - The Old Hunters on base-game dumps, with a DLC folder setting.
@@ -170,13 +175,10 @@ starts. Files that can't be read are listed in `user\last_run.log`.
 
 ## Keyboard button prompts
 
-Choose **Keyboard** in the launcher (**Settings > Controls**). The key images are
-[PCBButtons](https://www.nexusmods.com/bloodborne/mods/460) by **JinkiJinn**. They are an edit
-of the game's own menu file, so the port does not include them: the first time you choose
-Keyboard, the mod's Nexus page opens; download it and pick the downloaded file (.zip, .7z or
-.rar) in the dialog. Xbox prompts work the same way, from Dommo's
-[Xbox (and switch) UI for Bloodborne](https://www.nexusmods.com/bloodborne/mods/30) (if the
-download has several styles, unpack it and pick the `common.tpf.dcx` of the one you want).
+Choose **Keyboard** in the launcher (**Settings > Controls**). The key images are Kenney's
+[Input Prompts](https://kenney.nl/assets/input-prompts) (CC0): the first time you choose
+Keyboard, the launcher writes them into a copy of your game's `menu/common.tpf.dcx` in the
+mods folder, so nothing from the game ships with the port. Xbox prompts work the same way.
 Choosing Keyboard also sets your
 keys to the ones the images show: E interact, Left Shift dodge, R blood vial, Q item,
 F transform, left / right / middle mouse for attack / firearm / lock-on, Left Ctrl + left mouse
@@ -216,13 +218,37 @@ page take precedence:
 | 12-second respawn wait | | `BB_RESPAWN_DELAY_FIX=0` restores it |
 | Strict frame cap (no single frame faster than the cap) | | `BB_STRICT_FRAME_CAP=0` |
 | High-FPS sprint fix | `sprint_fix=0` turns it off | `BB_SPRINT_FIX=0` |
+| High-FPS effects in whole 1/30 s steps (effects that never ended, such as Ebrietas' rocks) | | `BB_EFFECT_STEP_GATE=0` |
+| High-FPS effects that move by each frame's time while counting in whole steps (smooth steps) | | `BB_EFFECT_SMOOTH=0` |
+| High-FPS torch, brazier and candle flicker at 30's pace (with the effect step gate) | | `BB_BLINK_HOLD=0` |
+| High-FPS wakes in water spreading at 30's pace (with the effect step gate) | | `BB_WATER_GATE=0` |
+| FPS presets below their target play as the lower rate would (fixed steps, effects' step, turn step, cape stiffness, grass wind and, with `camera_fix=1`, the camera's eases follow each frame's time) | | `BB_FRAME_TIME_PRESETS=0` keeps the preset's per-frame values |
 | Ultrawide camera and centered HUD (non-16:9 outputs) | `output_res=16:9 size` | `BB_ASPECT=0` |
 | Indirect dispatch guard (skips implausible GPU work counts) | | `BB_INDIRECT_GUARD=0` |
+| Indirect draw guard (skips implausible vertex and instance counts) | | `BB_INDIRECT_DRAW_GUARD=0` |
+| PS4 GPU rules for NaN and infinity in shaders (min/max, clamp, legacy multiply-adds, clamped rsq, negated compares) | | `BB_GCN_NAN=0` |
 | Pad stick neutral and travel per controller (clone pads) | | `BB_PAD_CENTER_CAL=0`, `BB_PAD_DEADZONE`, `BB_PAD_CENTER` |
 | Safe saves (write to a copy, then replace) | | `BB_SAFE_SAVES=0` |
 | Xbox pads: Back + d-pad left/right for the touchpad halves | | `BB_PAD_BACK_COMBO=0` |
 | Skip draws that cannot change anything | | `BB_SKIP_EMPTY_DRAWS=0` |
+| Blur-kernel sample count clamp (exit with debug exception 0xa0020007) | | `BB_KERNEL_CLAMP=0` |
+| Failed render jobs give their slot back (Laurence's cinematic above 30 FPS) | | `BB_JOB_SLOT_FIX=0` |
+| Render resource cache in 512 MiB of the port's memory (the game's: 160 MiB) | | `BB_RENDER_RESOURCE_CACHE_MB=160` keeps the game's |
+| GX range allocator at 288 MiB (the game's: 160 MiB; Ebrietas' trail filled it before device losses) | | `BB_GX_REGION_MB=160` keeps the game's (up to 416) |
+| Shader cache written by another build: its shaders are rebuilt | | `BB_SHADER_BUILD_CHECK=0` |
+| Skip draws whose vertex buffer table pointer is null | | `BB_SKIP_NULL_VB_TABLE=0` |
+| Zeroed vertex buffer descriptors read as zero (a valid vertex format) | | `BB_NULL_VERTEX_INPUT=0` |
 | All engine hooks (in-game menus and features) | | `BB_ENGINE_HOOKS=0` |
+| NVIDIA GPUs keep their boost clocks (Reflex Boost hint, not with DLSS Frame Generation) | | `BB_NV_BOOST=0` |
+| Hot pages: memory the game rewrites before almost every use stays writable and is uploaded on each use (at most 8 MiB) | | `BB_HOT_PAGES=0` off, `=1` the older rule (no size limit) |
+| Legacy CPU translations (on by themselves on CPUs without BMI1, LZCNT or MOVBE) | `legacy_cpu=0` or `1` | `BB_LEGACY_CPU=0` or `1` |
+
+For testing the legacy CPU translations only, not for play:
+
+| Test | Override |
+|---|---|
+| Leave the short instructions untranslated, as in 2.1 (135 LZCNT/TZCNT, 58 MOVBE) | `BB_LEGACY_CPU_SHORT_SITES=0` |
+| Run untranslated LZCNT/TZCNT as BSR/BSF, as an Ivy Bridge CPU does, on a newer CPU (with `BB_LEGACY_CPU=1`) | `BB_LEGACY_CPU_SIMULATE_BSR=1` |
 
 ## Known issues
 
@@ -252,7 +278,7 @@ page take precedence:
 ## Roadmap, help and source
 
 - What is planned next: [docs/ROADMAP.md](docs/ROADMAP.md).
-- Problems: open an [issue](https://github.com/Jgamrot/bloodborne_pc/issues) with your graphics
+- Problems: open an [issue](https://github.com/Jgamrot/yharnam-pc/issues) with your graphics
   card, what happened, and `user\last_run.log` from the `bbport-windows` folder.
 - Building: [packaging/windows/README.md](packaging/windows/README.md).
 
@@ -280,9 +306,8 @@ page take precedence:
   (DLC), DarkSpartan, gtggdd4mzb-source and yumlevi, andrecabralgit, noatdk, FIocker (including
   the English menu), jpramosjp and gStone.
 - The mouse camera by imedved (Nexus Mods), ported by mcrib884 and Jhony-Jhansen.
-- Xbox prompts by **Dommo**, from [Xbox (and switch) UI for Bloodborne](https://www.nexusmods.com/bloodborne/mods/30),
-  and keyboard prompts by **JinkiJinn**, from [PCBButtons](https://www.nexusmods.com/bloodborne/mods/460):
-  supported by the launcher, downloaded by each player from Nexus Mods.
+- Xbox and keyboard prompt images from [Input Prompts](https://kenney.nl/assets/input-prompts)
+  by **Kenney** (CC0).
 - The respawn fix after [AwesomeObserver's Windows work](https://github.com/AwesomeObserver/bloodborne_pc/blob/windows/docs/respawn-loading-windows.md).
 - [ShadPs4Plus PKG Extractor 1.1](https://github.com/AzaharPlus/shadPS4Plus) by AzaharPlus
   (GPL-2.0), included for installing your dump.

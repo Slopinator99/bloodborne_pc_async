@@ -35,6 +35,7 @@ import zipfile
 FROZEN = getattr(sys, 'frozen', False)
 PORT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PORT_DIR / 'scripts'))
+sys.path.append(str(PORT_DIR))  # run.py's START_SCRIPTS; frozen, the copy built into the launcher wins
 DATA_DIR = Path(os.environ.get('BB_DATA_DIR', PORT_DIR))
 # Co-op test build: its own settings, and no updates (a public release would replace it).
 COOP_TEST = False
@@ -44,8 +45,8 @@ PATCH_VERSION = '01.09'
 MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # This fork's build; the release tag includes this version.
-VERSION = '2.1'
-CURRENT_RELEASE_TAG = 'qml-launcher-preview-23'
+VERSION = '2.3.2'
+CURRENT_RELEASE_TAG = 'v2.3.2'
 HERO_ART = PORT_DIR / 'launcher' / 'art' / 'hero.png'
 STRIP_ART = PORT_DIR / 'launcher' / 'art' / 'strip.png'
 # Co-op: the community server that answers the game's own server requests.
@@ -54,6 +55,7 @@ COMMUNITY_SERVER = 'https://thehuntersdream.com'
 COMMUNITY_API_PORT = 18671
 RELEASES_API = 'https://api.github.com/repos/Slopinator99/bloodborne_pc_async/releases/latest'
 RELEASES_PAGE = 'https://github.com/Slopinator99/bloodborne_pc_async/releases/latest'
+RELEASES_LIST_API = 'https://api.github.com/repos/Slopinator99/bloodborne_pc_async/releases?per_page=100'
 UPDATE_DIR = Path(tempfile.gettempdir()) / 'bbport-update'
 # The last answer from GitHub, so a direct launch (no launcher window) can check quietly and the
 # launcher shows the result the next time it opens. Off with check_updates like every check.
@@ -62,6 +64,8 @@ QUIET_CHECK_DELAY = 20  # seconds after a direct launch starts the game
 QUIET_CHECK_INTERVAL = 6 * 3600  # at most this often from direct launches
 # Never copied over an installation by an update (the package does not hold them either).
 USER_FILES = ('user', 'out', 'mods', 'bbport.ini', 'mods.json', 'patches.json', 'last_run.log')
+# The running launcher: in use, and already this version. A repair leaves them alone.
+LAUNCHER_FILES = ('Bloodborne.exe', '_internal')
 
 
 # ---------------------------------------------------------------------------------------------
@@ -104,8 +108,32 @@ def run_role(argv):
     try:
         runpy.run_path(path, run_name='__main__')
     except SystemExit as stop:
-        return stop.code if isinstance(stop.code, int) else (0 if stop.code is None else 1)
+        return exit_status(stop.code if isinstance(stop.code, int) else (0 if stop.code is None else 1))
     return 0
+
+
+# Windows status codes a process can end with before it prints anything (run.py passes them on).
+EXIT_HINTS = {
+    0xC0000005: 'it crashed (access violation)',
+    0xC000007B: 'a DLL in bin is damaged or the wrong kind: extract the release into a new, empty folder',
+    0xC0000135: 'a DLL is missing from bin (antivirus?): extract the release into a new, empty folder',
+    0xC0000409: 'it stopped on a fatal error',
+}
+
+
+def exit_status(code):
+    """`code` as sys.exit and a Qt int take it: 32 bits, signed (0xC000007B is -1073741701)."""
+    code &= 0xFFFFFFFF
+    return code - (1 << 32) if code & 0x80000000 else code
+
+
+def exit_code_text(code):
+    """An exit code as the launcher shows it: Windows status codes in hex, with what they mean."""
+    code &= 0xFFFFFFFF
+    if not code & 0x80000000:
+        return str(code)
+    hint = EXIT_HINTS.get(code)
+    return f'0x{code:08X}' + (f', {hint}' if hint else '')
 
 
 def https_context():
@@ -238,16 +266,17 @@ ENHANCEMENTS = [
                            'Повторные бои с боссами у их фонарей (эксперимент; сохраните копию сохранений)'), False),
 ]
 INI_FLAGS = {'sharpen', 'object_motion', 'show_fps', 'mouse_camera', 'mouse_invert_y', 'mouse_menu', 'mouse_hide_cursor', 'frame_gen_fit_display',
+             'overlay_pad_shortcut',
              *(k for k, _t, _o in EFFECTS + EXTRAS + CHEATS + TWEAKS + ENHANCEMENTS + ATLAS)}
 INI_DEFAULTS = {'upscaler': 'dlss', 'preset': '2', 'sharpen': '1', 'sharpness': '0.50',
                 'object_motion': '1', 'show_fps': '1', 'output_res': '2560x1440', 'hud_position': '100', 'model_lod': '0',
                 'live_resolution': 'auto', 'mouse_camera': '1', 'mouse_sensitivity': '10', 'mouse_menu': '1',
-                'mouse_invert_y': '0', 'mouse_hide_cursor': '0', 'move_smoothing': '60', 'frame_gen': 'off', 'frame_gen_multiplier': '2', 'frame_gen_fit_display': '0',
+                'mouse_invert_y': '0', 'mouse_hide_cursor': '0', 'overlay_pad_shortcut': '1', 'pad_back': 'gestures', 'move_smoothing': '60', 'frame_gen': 'off', 'frame_gen_multiplier': '2', 'frame_gen_fit_display': '0',
                 'atlas_npc_mode': 'all',
                 **{key: '1' if on else '0' for key, _t, on in EFFECTS + EXTRAS + CHEATS + TWEAKS + ENHANCEMENTS + ATLAS}}
 APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'), 'user_dir': '', 'dlc_dir': '',
                 'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
-                'voice_language': 'auto',
+                'voice_language': 'auto', 'audio_channels': '',
                 'player_name': '', 'fullscreen': False, 'fullscreen_mode': 'borderless', 'display': '',
                 'hdr': False, 'present_mode': 'Mailbox',
                 'fps_mode': '120', 'frame_cap': '', 'draw_pipe': '', 'readbacks': '',
@@ -294,7 +323,8 @@ FRAME_GEN_MULTIPLIERS = [('2', ('2× (one generated frame)', '2× (один ка
                          ('4', ('4× (DLSS on GeForce RTX 50)', '4× (DLSS на GeForce RTX 50)'))]
 PRESETS = [('0', ('Native AA (×1.0)',)), ('1', ('Quality (×1.5)',)), ('2', ('Balanced (×1.7)',)),
            ('3', ('Performance (×2)',)), ('4', ('Ultra Performance (×3)',))]
-OUTPUTS = [('1280x720', ('1280 × 720 (Steam Deck)',)), ('1920x1080', ('1920 × 1080',)),
+OUTPUTS = [('1280x720', ('1280 × 720 (Steam Deck)',)), ('1366x768', ('1366 × 768',)),
+           ('1920x1080', ('1920 × 1080',)),
            ('2560x1440', ('2560 × 1440',)), ('3840x2160', ('3840 × 2160 (4K)',)),
            ('1280x800', ('1280 x 800 (16:10)',)), ('1920x1200', ('1920 × 1200 (16:10)',)),
            ('2560x1080', ('2560 x 1080 (Ultrawide)',)),
@@ -351,6 +381,11 @@ VOICE_LANGUAGES = [('auto', ('As in the game', 'Как в игре')), ('eng', (
                    ('ptb', ('Português (Brasil)',)), ('ded', ('Deutsch',)),
                    ('esa', ('Español (América)',)), ('ese', ('Español (España)',)),
                    ('frf', ('Français',)), ('iti', ('Italiano',)), ('jaj', ('日本語',))]
+# Speakers (BB_AUDIO_CHANNELS): the channels the game's 7.1 mix is folded to. A TV or headset can
+# take 7.1 from Windows and play only the front pair: no dialogue (GitHub issue #195).
+AUDIO_CHANNELS = [('', ('As in Windows', 'Как в Windows')),
+                  ('2', ('Stereo (headphones, TV speakers)', 'Стерео (наушники, динамики ТВ)')),
+                  ('6', ('5.1',)), ('8', ('7.1',))]
 DRAW_PIPE = [('', ('Auto (8+ threads)', 'Авто (8+ потоков)')), ('1', ('On', 'Включён')),
              ('0', ('Off (more stable)', 'Выключен (стабильнее)'))]
 READBACKS = [('', ('Relaxed (default)', 'Relaxed (по умолчанию)')), ('0', ('Off', 'Выключены')),
@@ -366,6 +401,10 @@ MOUSE_SPEEDS = [(str(v), (f'{v / 10:.1f}x',)) for v in (5, 7, 10, 13, 16, 20, 30
 # towards a new WASD direction per 1/60 s, in percent of a full push; 100 is off.
 MOVE_SMOOTHING = [('100', ('Off', 'Выкл.')), ('80', ('Light', 'Слабое')),
                   ('60', ('Medium (default)', 'Среднее (по умолчанию)')), ('35', ('Strong', 'Сильное'))]
+# Xbox View / Back alone (bbport.ini pad_back, #228): the touchpad half it clicks; View + d-pad
+# left or right picks either one.
+PAD_BACK = [('gestures', ('Gestures (default)', 'Жесты (по умолчанию)')),
+            ('effects', ('Personal Effects', 'Личные вещи'))]
 FRAMES_AHEAD = [('', ('1 (default)', '1 (по умолчанию)')), ('2', ('2',)), ('0', ('Unbounded', 'Без ограничения'))]
 VRAM_BUDGETS = [('', ('Automatic (recommended)', 'Автоматически (рекомендуется)')),
                 ('2560', ('2.5 GB',)), ('3072', ('3 GB',)), ('4096', ('4 GB',)),
@@ -461,15 +500,20 @@ def load_ini():
 
 
 def save_ini(values, lines):
-    """Rewrites the edited keys in place, appends missing ones, keeps comments and other keys."""
+    """Rewrites the edited keys in place, appends missing ones, keeps comments and other keys.
+    A repeated key is written once: an edited one at its first line, another at its last."""
+    keys = [line.split('=', 1)[0].strip() if '=' in line and not line.lstrip().startswith('#') else None
+            for line in lines]
+    last = {key: i for i, key in enumerate(keys)}
     written, out = set(), []
-    for line in lines:
-        if '=' in line and not line.lstrip().startswith('#'):
-            key = line.split('=', 1)[0].strip()
-            if key in values:
+    for i, (line, key) in enumerate(zip(lines, keys)):
+        if key in values:
+            if key not in written:
                 out.append(f'{key}={values[key]}')
                 written.add(key)
-                continue
+            continue
+        if key is not None and last[key] != i:
+            continue  # a later line sets it, as load_ini reads it
         out.append(line)
     if not lines:
         out.append('# bbport settings (in-game menu: Insert / L3+R3)')
@@ -545,13 +589,14 @@ def server_check(server, webapi, community):
 
 # The Hunter's Dream pool: the engine's own backend for it (BB_NET_BACKEND=thd, bbhost's
 # protocol, Awaken's port as Supermedo took it in): the pool choice and the Discord sign-in on
-# the Online page, as Supermedo shows them since its 1.8.1. BB_HUNTERS_DREAM=0 hides them.
-HUNTERS_DREAM_POOL = os.environ.get('BB_HUNTERS_DREAM') != '0'
+# the Online page, as Supermedo shows them since its 1.8.1. Off for now: the server refuses this
+# port's client (#10); BB_HUNTERS_DREAM=1 shows them again.
+HUNTERS_DREAM_POOL = os.environ.get('BB_HUNTERS_DREAM') == '1'
 ONLINE_POOLS = [('shadnet', ('shadNet server (address below)',)),
                 ('huntersdream', ("The Hunter's Dream (Discord sign-in)",))]
 # Which build a server sees: shadNet's client version and The Hunter's Dream's client field
-# ("bbport-jgamrot/<version>"). This fork's own name, never an official shadPS4 one.
-CLIENT_VERSION = f'bbport-jgamrot {VERSION}'
+# ("yharnam-pc/<version>"). This fork's own name, never an official shadPS4 one.
+CLIENT_VERSION = f'yharnam-pc {VERSION}'
 
 
 # How the launcher's PLAY starts the game: 'offline', 'huntersdream' (online on The Hunter's
@@ -562,6 +607,8 @@ PLAY_MODES = ('offline', 'huntersdream', 'coop')
 def play_mode(s):
     """The play mode; older settings (Play online with The Hunter's Dream pool) map to it."""
     mode = s.get('play_mode')
+    if mode == 'huntersdream' and not HUNTERS_DREAM_POOL:
+        return 'offline'
     if mode in PLAY_MODES:
         return mode
     return 'huntersdream' if s.get('online') and s.get('online_pool') == 'huntersdream' else 'offline'
@@ -595,9 +642,11 @@ def thd_call(url, body):
 def thd_sign_in(game_server, on_code, cancelled=lambda: False):
     """Discord sign-in the way bbhost does it: a code to approve on the website. on_code(page,
     code) shows it. Returns (online id, token); raises ValueError."""
+    if thd_refused():
+        raise ValueError(_(*THD_REFUSED_NOTE))
     auth = community_address(game_server)
     start = thd_call(auth + '/auth/device/start',
-                     {'DeviceName': f'bbport-jgamrot on {os.environ.get("COMPUTERNAME", "PC")}'})
+                     {'DeviceName': f'yharnam-pc on {os.environ.get("COMPUTERNAME", "PC")}'})
     device, user_code = start.get('DeviceCode', ''), start.get('UserCode', '')
     if not device or not user_code:
         raise ValueError('no code in the reply')
@@ -647,10 +696,43 @@ def thd_client_refused(reason):
     return 'client is not supported' in reason.casefold()
 
 
+# The CLIENT_VERSION The Hunter's Dream refused. While it is this launcher's, nothing here signs in
+# to it or starts the game on it (PLAY starts offline); a new version tries again once.
+THD_REFUSAL = CONFIG_DIR / 'thd-refusal.json'
+# The game's line for that refusal (gpu/bbnet/thd/thd_session.cpp MarkRefused).
+THD_REFUSED_LINE = 'THD: the server refused this client ('
+THD_REFUSED_NOTE = ("The Hunter's Dream doesn't accept this build; offline play and seamless co-op still work.",
+                    "The Hunter's Dream не принимает эту сборку; офлайн-игра и бесшовный кооператив работают.")
+
+
+def thd_refused():
+    saved = load_json(THD_REFUSAL, {})
+    return isinstance(saved, dict) and saved.get('client') == CLIENT_VERSION
+
+
+def remember_thd_refusal(reason=''):
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        THD_REFUSAL.write_text(json.dumps({'client': CLIENT_VERSION, 'reason': reason, 'when': time.time()}),
+                               encoding='utf-8')
+    except OSError:
+        pass
+
+
+def note_game_output(line):
+    """A line of the game's output; True when it is The Hunter's Dream refusing this build."""
+    if THD_REFUSED_LINE not in line:
+        return False
+    remember_thd_refusal(line.strip())
+    return True
+
+
 def thd_account_check(community, online_id, token):
     """Whether The Hunter's Dream accepts this sign-in from this client: the game's own event
     poll (read-only, no ack), with the headers gpu/bbnet/thd/thd_session.cpp sends. A saved
     token alone says nothing: the server can still refuse the account or this build (HTTP 401)."""
+    if thd_refused():
+        return _(*THD_REFUSED_NOTE)
     if not online_id or not token:
         return _('Not signed in: use "Sign in with Discord".')
     # The game sends at most 16 characters of it (thd_session.cpp, BB_THD_ONLINE_ID).
@@ -674,6 +756,7 @@ def thd_account_check(community, online_id, token):
             reason = ''
         line = _('Sign-in as {0}: refused by the server ({1})').format(online_id, reason or 'HTTP 401')
         if thd_client_refused(reason):
+            remember_thd_refusal(reason)
             line += '\n' + _('The server refuses this build, not the account: signing in again does not help.')
         return line
     except ValueError:
@@ -686,21 +769,19 @@ def thd_account_check(community, online_id, token):
     return _('Signed in as {0}: accepted by the server').format(online_id)
 
 
-# Button prompt packs. Both are edits of the game's own menu/common.tpf.dcx, so the port does not
-# ship them: the player downloads one from Nexus Mods and the launcher adds it to the mods folder
-# (install_prompt_pack). Keyboard is PCBButtons by JinkiJinn; its images show shadPS4's PC layout,
-# so choosing it also binds those keys (bbport.ini key_*); the engine names keys in text
-# (src/key_prompts.c) when the bindings differ from the images.
-KEYBOARD_PROMPTS = 'Keyboard Prompts (PCBButtons)'
-KEYBOARD_PROMPTS_URL = 'https://www.nexusmods.com/bloodborne/mods/460'
-XBOX_PROMPTS = 'Xbox Prompts (Dommo)'
-XBOX_PROMPTS_URL = 'https://www.nexusmods.com/bloodborne/mods/30'
-# choice: (mods folder name, Nexus page, mod title, creator)
-PROMPT_PACKS = {
-    'Xbox': (XBOX_PROMPTS, XBOX_PROMPTS_URL, 'Xbox (and switch) UI for Bloodborne', 'Dommo'),
-    'Keyboard': (KEYBOARD_PROMPTS, KEYBOARD_PROMPTS_URL, 'PCBButtons', 'JinkiJinn'),
-}
-PROMPT_ARCHIVES = ('.zip', '.7z', '.rar')
+# Button prompt packs: Kenney's Input Prompts (CC0) written into the player's own
+# menu/common.tpf.dcx (scripts/prompt_icons.py, launcher/assets/prompts) and added to the mods
+# folder (install_prompt_pack). The keyboard images show KEYBOARD_PROMPT_LAYOUT, so choosing them
+# also binds those keys (bbport.ini key_*); the engine names keys in text (src/key_prompts.c) when
+# the bindings differ from the images.
+KEYBOARD_PROMPTS = 'Keyboard Prompts (Kenney)'
+XBOX_PROMPTS = 'Xbox Prompts (Kenney)'
+# choice: (mods folder name, launcher/assets/prompts file)
+PROMPT_PACKS = {'Xbox': (XBOX_PROMPTS, 'xbox.json'), 'Keyboard': (KEYBOARD_PROMPTS, 'keyboard.json')}
+# Prompt mods earlier launchers added (the player's Nexus download, or shipped with 1.9.x); still
+# prompt mods, so a choice here turns them off.
+LEGACY_KEYBOARD_PROMPTS = 'Keyboard Prompts (PCBButtons)'
+LEGACY_PROMPT_MODS = (LEGACY_KEYBOARD_PROMPTS, 'Xbox Prompts (Dommo)', 'Xbox 360 Prompts (Elden Ring)')
 KEYBOARD_PROMPT_LAYOUT = {
     'key_interact': 'E', 'key_roll': 'Left Shift', 'key_blood_vial': 'R', 'key_use_item': 'Q',
     'key_transform': 'F', 'key_attack': 'Mouse1', 'key_firearm': 'Mouse2',
@@ -709,49 +790,28 @@ KEYBOARD_PROMPT_LAYOUT = {
 }
 
 
-def _prompt_textures(folder):
-    return [path for path in Path(folder).rglob('*')
-            if path.is_file() and path.name.casefold() == 'common.tpf.dcx']
-
-
-def install_prompt_pack(choice, source, mods_dir):
-    """Adds a prompt pack from the player's own Nexus download: the archive (.zip, .7z or .rar,
-    unpacked with Windows' tar), its unpacked folder or its common.tpf.dcx. Copies the texture to
-    <mods>/<pack>/menu/common.tpf.dcx and returns that mod folder; ValueError when the download
-    has none, or several (a pack with variants: choose the variant's own file)."""
-    name, page, title, creator = PROMPT_PACKS[choice]
-    source = Path(source)
-    with tempfile.TemporaryDirectory(prefix='bbport-prompts-') as scratch:
-        if source.is_dir():
-            found = _prompt_textures(source)
-        elif source.name.casefold() == 'common.tpf.dcx':
-            found = [source]
-        elif source.suffix.casefold() in PROMPT_ARCHIVES:
-            tar = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'tar.exe'
-            # bsdtar refuses absolute and ../ member paths, so nothing lands outside scratch.
-            result = subprocess.run([str(tar if tar.is_file() else 'tar'), '-xf', str(source), '-C', scratch],
-                                    capture_output=True, text=True, creationflags=NO_WINDOW)
-            if result.returncode:
-                raise ValueError(f'Could not unpack {source.name}: {result.stderr.strip() or result.returncode}. '
-                                 'Unpack it yourself and choose its common.tpf.dcx.')
-            found = _prompt_textures(scratch)
-        else:
-            raise ValueError('Choose the downloaded .zip, .7z or .rar, or the common.tpf.dcx inside it.')
-        if not found:
-            raise ValueError(f'{source.name} has no menu/common.tpf.dcx. Choose the {title} download from {page}.')
-        if len(found) > 1:
-            raise ValueError(f'{source.name} has {len(found)} prompt variants. Unpack it and choose the '
-                             'common.tpf.dcx of the one you want.')
-        with open(found[0], 'rb') as texture:
-            if texture.read(4) != b'DCX\0':
-                raise ValueError(f'{found[0].name} is not a game archive (DCX). Choose the {title} download.')
-        target = Path(mods_dir) / name
-        (target / 'menu').mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(found[0], target / 'menu' / 'common.tpf.dcx')
+def install_prompt_pack(choice, game_dir, mods_dir):
+    """Writes the pack's images into the game's menu/common.tpf.dcx as
+    <mods>/<pack>/menu/common.tpf.dcx and returns that mod folder. ValueError when the game folder
+    has no such file or it is not the 1.09 one."""
+    import prompt_icons
+    from fromsoft import FormatError
+    name, data = PROMPT_PACKS[choice]
+    source = Path(game_dir or '') / 'dvdroot_ps4' / 'menu' / 'common.tpf.dcx'
+    if not source.is_file():
+        raise ValueError(f'{choice} prompts are made from the game\'s menu/common.tpf.dcx: '
+                         'choose the game folder first.')
+    assets = PORT_DIR / 'launcher' / 'assets' / 'prompts'
+    try:
+        texture = prompt_icons.apply(source.read_bytes(), prompt_icons.load(assets / data))
+    except FormatError as error:
+        raise ValueError(f'{choice} prompts: {error}') from None
+    target = Path(mods_dir) / name
+    (target / 'menu').mkdir(parents=True, exist_ok=True)
+    (target / 'menu' / 'common.tpf.dcx').write_bytes(texture)
     (target / 'SOURCE.txt').write_text(
-        f'{title} by {creator}\nSource: {page}\n'
-        f'Added by the launcher from your own download ({source.name}); the port does not ship it.\n',
-        encoding='utf-8')
+        "Input Prompts by Kenney (www.kenney.nl), CC0.\n"
+        'Written by the launcher into your own menu/common.tpf.dcx.\n', encoding='utf-8')
     return target
 
 
@@ -771,6 +831,8 @@ def game_environment(s):
     env['BB_PATCHES_CONFIG'] = str(DATA_DIR / 'patches.json')
     env['BB_LANGUAGE'] = s['language']
     env['BB_VOICE_LANGUAGE'] = s.get('voice_language') or 'auto'
+    if s.get('audio_channels'):
+        env['BB_AUDIO_CHANNELS'] = str(s['audio_channels'])
     if str(s['player_name']).strip():
         env['BB_USER_NAME'] = str(s['player_name']).strip()
     env['BB_FULLSCREEN'] = '1' if s['fullscreen'] else '0'
@@ -796,9 +858,9 @@ def game_environment(s):
         if '=' in item:
             key, value = item.split('=', 1)
             env[key] = value
-    # Online only in The Hunter's Dream play mode; seamless co-op sets up its own launch
-    # (bbport_coop.co_op_environment), and the shadNet-server pool is no longer offered.
-    if s.get('online') and play_mode(s) == 'huntersdream':
+    # Online only in The Hunter's Dream play mode, unless it refused this build; seamless co-op sets
+    # up its own launch (bbport_coop.co_op_environment), and the shadNet-server pool is no longer offered.
+    if s.get('online') and play_mode(s) == 'huntersdream' and not thd_refused():
         server = str(s['online_server']).strip() or APP_DEFAULTS['online_server']
         env['BB_ONLINE'] = '1'
         env['BB_SHADNET_SERVER'] = server
@@ -846,7 +908,7 @@ class Launcher:
         self.ini, self.ini_lines = load_ini()
         self.vars = {}
         self.process = self.job = None
-        self.downloading = False
+        self.downloading = self.repairing = False
         self.output = queue.Queue()
         self.gpu_text = _('• Checking the graphics card…', '• Проверка видеокарты…')
         self.banner_source = self.banner_image = None
@@ -885,6 +947,8 @@ class Launcher:
             if remembered := remembered_update():  # found by a direct launch's quiet check
                 self.offer_update(*remembered)
             threading.Thread(target=self.check_update, daemon=True).start()
+        if missing := missing_port_files():
+            root.after(300, lambda: self.offer_repair(missing))
 
     def px(self, size):
         return int(size * self.dpi)
@@ -1721,6 +1785,11 @@ class Launcher:
         self.row(f, _('Voice language', 'Язык озвучки'), self.choice(f, 'voice_language', 'app', VOICE_LANGUAGES),
                  _('As in the game uses the original voice setting; other choices use available tracks.',
                    '«Как в игре» оставляет исходную озвучку; другие варианты берут доступные дорожки.'))
+        self.row(f, _('Speakers', 'Динамики'), self.choice(f, 'audio_channels', 'app', AUDIO_CHANNELS),
+                 _('Stereo when dialogue is missing or hits sound muffled: some TVs and headsets take 7.1 '
+                   'and play only the front pair.',
+                   'Стерео, если не слышно диалогов или удары звучат глухо: некоторые ТВ и гарнитуры '
+                   'принимают 7.1 и играют только два передних канала.'))
         self.row(f, _('Player name', 'Имя игрока'), self.ttk.Entry(f, textvariable=self.var('player_name', 'app'), width=30),
                  _('Where the game shows the PSN name; empty: the default.', 'Где игра показывает имя PSN; пусто — по умолчанию.'))
         self.section(f, _('Effects', 'Эффекты'))
@@ -1749,6 +1818,9 @@ class Launcher:
         control, camera = self.var('cheat_enemy_control', 'ini'), self.var('debug_camera', 'ini')
         control.trace_add('write', lambda *_a: control.get() and camera.set(False))
         camera.trace_add('write', lambda *_a: camera.get() and control.set(False))
+        self.note(f, _("Cheats, the free camera and the debug menu are off when playing online with The "
+                       "Hunter's Dream; seamless co-op keeps them.", 'Читы, свободная камера и меню отладки '
+                       "отключены при игре онлайн через The Hunter's Dream; в бесшовном кооперативе они остаются."))
 
     def build_online(self):
         ttk = self.ttk
@@ -1818,6 +1890,8 @@ class Launcher:
         """The co-op pool choice and The Hunter's Dream's Discord sign-in (BB_HUNTERS_DREAM=0 hides them)."""
         ttk = self.ttk
         self.section(f, _("The Hunter's Dream (test build)"))
+        if thd_refused():
+            self.note(f, _(*THD_REFUSED_NOTE))
         self.row(f, _('Co-op pool'), self.choice(f, 'online_pool', 'app', ONLINE_POOLS),
                  _("The Hunter's Dream signs in with Discord below; the shadNet server uses the account "
                    'fields further down.'))
@@ -2195,7 +2269,7 @@ class Launcher:
 
     # ---- game process ------------------------------------------------------------------------
     def play(self):
-        if self.process:
+        if self.process or self.repairing:
             return
         online, npid = self.var('online', 'app'), self.var('online_npid', 'app')
         if not online.get() and npid.get().strip():
@@ -2205,8 +2279,9 @@ class Launcher:
             if choice is None:
                 return
             online.set(bool(choice))
+        refused = thd_refused()  # PLAY starts offline instead
         if (online.get() and HUNTERS_DREAM_POOL and self.var('online_pool', 'app').get() == 'huntersdream'
-                and not self.var('thd_token', 'app').get()):
+                and not self.var('thd_token', 'app').get() and not refused):
             self.messagebox.showwarning('Bloodborne', _("The Hunter's Dream: sign in with Discord on the "
                                                         'Online page first.'))
             self.show('online')
@@ -2223,7 +2298,12 @@ class Launcher:
                                                       'Выберите папку игры с eboot.bin (CUSA03173).'))
             self.show('game')
             return
+        if missing := missing_port_files():
+            self.offer_repair(missing)
+            return
         self.set_log('')
+        if refused and online.get() and play_mode(self.app) == 'huntersdream':
+            self.append(_(*THD_REFUSED_NOTE) + ' ' + _('Starting offline.', 'Запуск офлайн.') + '\n')
         try:
             self.process = subprocess.Popen(run_command(), cwd=PORT_DIR, env=game_environment(self.app),
                                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -2252,6 +2332,7 @@ class Launcher:
         for raw in iter(process.stdout.readline, b''):
             text = raw.decode('utf-8', errors='replace')
             self.output.put(text)
+            note_game_output(text)
             if not warned and 'eboot.bin is not the 01.09 build' in text:
                 warned = True
                 self.ui_calls.put(lambda: self.messagebox.showwarning('Bloodborne', _(
@@ -2272,13 +2353,16 @@ class Launcher:
             for _i in range(500):
                 item = self.output.get_nowait()
                 if isinstance(item, tuple):
-                    self.append(_('\n— the game exited (code {}) —\n', '\n— игра завершилась (код {}) —\n').format(item[0]))
+                    self.append(_('\n— the game exited (code {}) —\n', '\n— игра завершилась (код {}) —\n').format(
+                        exit_code_text(item[0])))
                     self.process = None
                     if self.job:
                         self.job.close()
                     self.sync_ini()  # the in-game menu's changes, shown at once
                     self.stop_button.configure(state='disabled')
                     self.refresh_status()
+                    if item[0] and (missing := missing_port_files()):
+                        self.offer_repair(missing)
                 else:
                     if 'Entering original x86-64 code' in item:
                         self.status.configure(text=_('The game is running.', 'Игра запущена.'), fg=GOLD)
@@ -2421,6 +2505,72 @@ class Launcher:
                 self.ui_calls.put(failed)
         threading.Thread(target=work, daemon=True).start()
 
+    # ---- repair --------------------------------------------------------------------------------
+    def offer_repair(self, missing):
+        """A port folder without some of its files (#171): offers to put this version's back."""
+        if self.repairing:
+            return
+        if not FROZEN or COOP_TEST:
+            self.repair_failed(missing)
+            return
+        more = _(' and {} more', ' и ещё {}').format(len(missing) - 1) if len(missing) > 1 else ''
+        if self.messagebox.askyesno('Bloodborne', _(
+                'This copy of the port is incomplete: {} missing.\n\nRepair it? The launcher downloads version {} '
+                'from GitHub and puts its files back. Saves, settings and mods are kept.',
+                'Эта копия порта неполная: нет {}.\n\nВосстановить? Лаунчер скачает версию {} с GitHub и вернёт '
+                'её файлы. Сохранения, настройки и моды останутся.').format(missing[0] + more, VERSION)):
+            self.repair()
+
+    def repair(self):
+        if self.process:
+            self.messagebox.showinfo('Bloodborne', _('Close the game before repairing.', 'Закройте игру перед восстановлением.'))
+            return
+        self.repairing = True
+
+        def progress(percent):
+            self.status.configure(text=_('Downloading version {}… {}%', 'Загрузка версии {}… {}%').format(
+                VERSION, percent), fg=GOLD)
+
+        def work():
+            try:
+                missing, failed = repair_port(lambda percent: self.ui_calls.put(lambda: progress(percent)))
+            except OSError as failure:
+                self.ui_calls.put(lambda error=failure: self.repair_done(missing_port_files(), [], error))
+            else:
+                self.ui_calls.put(lambda: self.repair_done(missing, failed))
+        threading.Thread(target=work, daemon=True).start()
+
+    def repair_done(self, missing, failed, error=None):
+        self.repairing = False
+        self.status.configure(text='', fg=MUTED)
+        if error or missing:
+            self.repair_failed(missing, error)
+        elif failed:
+            self.messagebox.showwarning('Bloodborne', _(
+                'The port is repaired, but some files were in use and were not replaced: {}. Close the '
+                'programs using them and repair again if the game does not start.',
+                'Порт восстановлен, но некоторые файлы были заняты и не заменены: {}. Закройте программы, '
+                'которые их используют, и повторите, если игра не запускается.').format(
+                    ', '.join(map(str, failed[:3]))))
+        else:
+            self.messagebox.showinfo('Bloodborne', _('The port is repaired: the files of version {} are back.',
+                                                     'Порт восстановлен: файлы версии {} на месте.').format(VERSION))
+
+    def repair_failed(self, missing, error=None):
+        """What run.py says about an incomplete copy, with the releases page opened."""
+        text = ''
+        if missing:
+            more = _(' and {} more', ' и ещё {}').format(len(missing) - 1) if len(missing) > 1 else ''
+            text = _('This copy of the port is incomplete: {} missing from {}. Download the port again from {} '
+                     'and unpack the whole zip; copies from other sites often leave files out.',
+                     'Эта копия порта неполная: в {1} нет {0}. Скачайте порт заново с {2} и распакуйте весь '
+                     'архив; в копиях с других сайтов часто не хватает файлов.').format(
+                         missing[0] + more, PORT_DIR, RELEASES_PAGE)
+        if error:
+            text = (_('Repair failed: {}', 'Не удалось восстановить: {}').format(error) + '\n\n' + text).strip()
+        self.messagebox.showerror('Bloodborne', text)
+        webbrowser.open(RELEASES_PAGE)
+
     def clear_cache(self):
         """Shader and pipeline caches; they are rebuilt while playing."""
         if self.process:
@@ -2552,11 +2702,12 @@ def play_without_window(settings):
         for raw in iter(process.stdout.readline, b''):
             text = raw.decode('utf-8', errors='replace')
             log.write(text)
+            note_game_output(text)
             try:
                 sys.stdout.write(text)
             except (OSError, ValueError):
                 pass
-        return process.wait()
+        return exit_status(process.wait())
 
 
 def version_tuple(text):
@@ -2713,6 +2864,100 @@ def install_update(target, wait_pid):
     return 0
 
 
+def missing_port_files(port=None):
+    """run.py and the scripts it needs that the port folder lacks, by run.py's START_SCRIPTS
+    (frozen: this launcher's own copy of run.py, so this version's list)."""
+    port = Path(port or PORT_DIR)
+    missing = [] if (port / 'run.py').is_file() else ['run.py']
+    try:
+        import run
+        return missing + run.missing_port_files(port)
+    except (ImportError, AttributeError):  # no run.py to read the list from, or an old one
+        return missing or ['run.py']
+
+
+def own_release(releases, version=None, tag=None):
+    """(zip URL, page URL) of this launcher's release in a GitHub releases list: the one tagged
+    CURRENT_RELEASE_TAG, else the one named "Bloodborne Windows Launcher <VERSION> (...)"."""
+    version, tag = version or VERSION, tag or CURRENT_RELEASE_TAG
+
+    def zip_url(release):
+        assets = [asset for asset in release.get('assets') or []
+                  if str(asset.get('name', '')).lower().endswith('.zip')]
+        assets.sort(key=lambda asset: asset.get('name') != 'bbport-windows.zip')
+        return next((asset['browser_download_url'] for asset in assets if asset.get('browser_download_url')), None)
+
+    def named(release):
+        match = re.match(r'Bloodborne Windows Launcher (\S+)', release.get('name') or '')
+        return bool(match) and match.group(1) == version
+
+    for wanted in (lambda release: release.get('tag_name') == tag, named):
+        for release in releases:
+            if isinstance(release, dict) and not release.get('draft') and wanted(release):
+                if url := zip_url(release):
+                    return url, release.get('html_url') or RELEASES_PAGE
+    return None
+
+
+def download(url, path, progress=None):
+    """A release zip to path; progress(percent) each time the percentage changes."""
+    request = urllib.request.Request(url, headers={'User-Agent': 'bbport-launcher'})
+    with urllib.request.urlopen(request, timeout=60) as response, open(path, 'wb') as out:
+        total, done, shown = int(response.headers.get('Content-Length') or 0), 0, -1
+        while chunk := response.read(1 << 20):
+            out.write(chunk)
+            done += len(chunk)
+            percent = done * 100 // total if total else 0
+            if progress and percent != shown:
+                shown = percent
+                progress(percent)
+
+
+def repair_copy(source, target):
+    """Every file of the release in source over target but USER_FILES and LAUNCHER_FILES.
+    Returns the files not copied (in use)."""
+    source = Path(source)
+    files = [path.relative_to(source) for path in sorted(source.rglob('*'))
+             if path.is_file() and path.relative_to(source).parts[0] not in USER_FILES + LAUNCHER_FILES]
+    return copy_release(source, target, files)
+
+
+def repair_port(progress=None, target=None):
+    """Downloads this version's release and copies it over the port folder (repair_copy), so a
+    folder with files missing or left from another version matches this launcher again.
+    Returns (files still missing, files not copied); raises OSError when it cannot."""
+    target = Path(target or PORT_DIR)
+    if not FROZEN or COOP_TEST:
+        raise OSError('only a packaged launcher repairs itself')
+    request = urllib.request.Request(RELEASES_LIST_API, headers={'Accept': 'application/vnd.github+json',
+                                                                 'User-Agent': 'bbport-launcher'})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            releases = json.load(response)
+    except ValueError as error:
+        raise OSError(f'unexpected answer from GitHub: {error}') from error
+    found = own_release(releases if isinstance(releases, list) else [])
+    if not found:
+        raise OSError(f'version {VERSION} was not found on GitHub')
+    if not remove_update_folder():
+        raise OSError('an update is still being installed; try again in a minute')
+    try:
+        UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+        archive = UPDATE_DIR / 'repair.zip'
+        download(found[0], archive, progress)
+        try:
+            extract_update(archive, UPDATE_DIR / 'new')
+        except zipfile.BadZipFile as error:
+            raise OSError(f'the download is damaged: {error}') from error
+        source = next((p.parent for p in (UPDATE_DIR / 'new').rglob('Bloodborne.exe')), None)
+        if not source:
+            raise OSError('Bloodborne.exe is missing from the download')
+        failed = repair_copy(source, target)
+    finally:
+        remove_update_folder()
+    return missing_port_files(target), failed
+
+
 def main():
     global LANG
     args = sys.argv[1:]
@@ -2733,8 +2978,10 @@ def main():
         sys.exit(install_update(args[1], args[2]))
     if FROZEN and UPDATE_DIR not in PORT_DIR.parents:
         remove_update_folder()  # what a finished update left behind
-    # Without a usable game folder there is nothing to play yet: open the launcher instead.
-    if '--play' in args and (Path(settings['game_dir'] or '.') / 'eboot.bin').is_file():
+    # Without a usable game folder there is nothing to play yet, and an incomplete port folder
+    # needs Repair: open the launcher instead.
+    if ('--play' in args and (Path(settings['game_dir'] or '.') / 'eboot.bin').is_file()
+            and not missing_port_files()):
         sys.exit(play_without_window(settings))
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # sharp text on scaled displays

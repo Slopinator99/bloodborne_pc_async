@@ -15,12 +15,13 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 PORT = Path(__file__).resolve().parent
-# The keyboard key images (PCBButtons from Nexus Mods), as the launcher adds them to the mods
-# folder (launcher KEYBOARD_PROMPTS).
-KEYBOARD_PROMPTS = 'Keyboard Prompts (PCBButtons)'
+# The keyboard key images as the launcher adds them to the mods folder (launcher
+# KEYBOARD_PROMPTS), and the PCBButtons download earlier launchers added.
+KEYBOARD_PROMPTS = ('Keyboard Prompts (Kenney)', 'Keyboard Prompts (PCBButtons)')
 
 
 # Co-op: the community service that answers Bloodborne's own game-server requests
@@ -90,6 +91,17 @@ def fail(message):
     sys.exit(1)
 
 
+# Windows' Smart App Control / App Control (WDAC) refuses unsigned programs: ERROR_SYSTEM_INTEGRITY_POLICY
+# (4551) and ERROR_VIRUS_INFECTED-like refusals (225) end the start with a traceback otherwise (#234).
+BLOCKED_BY_POLICY = (4551, 225)
+
+
+def blocked_message(program):
+    return (f'Windows blocked {Path(program).name} (Smart App Control or an App Control policy). The '
+            "port's programs are not code-signed, so Smart App Control refuses them: turn it off in Windows "
+            "Security > App & browser control > Smart App Control, or allow the port's folder in your policy.")
+
+
 # The scripts a start runs or imports. A copy of the port with some left out (seen in repacks
 # from other sites, GitHub issue #118) stopped with "No module named 'game_check'"; it now says
 # what is missing and where the whole package is. (After Awaken's port 0.9.30: "a game folder
@@ -97,7 +109,7 @@ def fail(message):
 START_SCRIPTS = ('game_check.py', 'enhancements.py', 'atlas.py', 'patches.py', 'aspect_ratio.py', 'mods.py',
                  'language_files.py', 'hud_layout.py', 'content_profile.py', 'link_libc.py', 'link_modules.py',
                  'prepare.py', 'shader_code.py', 'quiet_output.py', 'runlog.py')
-RELEASES = 'https://github.com/Jgamrot/bloodborne_pc/releases/latest'
+RELEASES = 'https://github.com/Jgamrot/yharnam-pc/releases/latest'
 # Text languages (PS4 system language ids) the game shows without Unlock Game Region: English
 # (US) and Russian (GitHub issue #58: Russian text without it).
 REGION_LANGUAGES = ('', '1', '8')
@@ -113,6 +125,52 @@ def explain_missing_port_files(missing):
     return (f'This copy of the port is incomplete: {missing[0]}{more} missing from {PORT}. '
             f'Download the port again from {RELEASES} and unpack the whole zip; copies from '
             f'other sites often leave files out.')
+
+
+def game_running():
+    """Whether a game (bb-probe.exe) runs now; unknown counts as yes."""
+    try:
+        result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq bb-probe.exe', '/FO', 'CSV', '/NH'],
+                                capture_output=True, timeout=15, creationflags=no_console())
+    except (OSError, subprocess.SubprocessError):
+        return True
+    # Bytes: its "no tasks" line is in the console's code page and language.
+    return result.returncode != 0 or b'bb-probe.exe' in result.stdout.lower()
+
+
+def remove_stale_views(out, game):
+    """The game views with mods (mods.py's mod-game-* folders in out, beside the game or in
+    %TEMP%) that a game left behind when it did not end through run.py (ended in the Task
+    Manager, the PC turned off): removed before a new one is made, while no game runs. They hold
+    links into the game folder; mods.remove_overlay deletes the links (shutil.rmtree does not
+    follow junctions), never what they point to. From nick24051998, Supermedo/bloodborne_pc#112."""
+    game = Path(game).resolve()
+    places = {Path(out).resolve(), game.parent, Path(tempfile.gettempdir()).resolve()}
+    stale = [path for place in places if place.is_dir() for path in place.glob('mod-game-*')
+             if path.is_dir() and not path.is_symlink()
+             and not (hasattr(path, 'is_junction') and path.is_junction())
+             and path.resolve() != game and not game.is_relative_to(path.resolve())]
+    if not stale or game_running():
+        return
+    sys.path.insert(0, str(PORT / 'scripts'))
+    from mods import remove_overlay
+    removed = 0
+    for path in stale:
+        try:
+            remove_overlay(path, game)
+            removed += 1
+        except OSError as error:
+            print(f'Mods: {path} could not be removed: {error}')
+    if removed:
+        print(f'Mods: removed {removed} game view(s) an earlier game left behind')
+
+
+def steam_layers_off(env):
+    """Started from Steam, the game gets Steam's Vulkan layers. Its shader pre-caching layer
+    (Fossilize) cannot record the port's pipelines ("Fossilize ERROR: Cannot copy unknown pNext
+    sType"), and a tester's AMD driver crashed right after (amdvlk64.dll). The port keeps its own
+    pipeline cache; Steam's overlay stays. From nick24051998, Supermedo/bloodborne_pc#120."""
+    env['DISABLE_VK_LAYER_VALVE_steam_fossilize_1'] = '1'
 
 
 def wait_for(pid):
@@ -175,6 +233,17 @@ def ini_value(path, key):
     except OSError:
         pass
     return None
+
+
+def startup_output_res(env, config):
+    """The output size of this start: BB_OUTPUT_RES, else bbport.ini's. Sizes this script chose
+    for the previous start (BB_AUTO_RENDER_RES) are dropped first: after an in-game restart that
+    changed the output, the HUD layout was made for the old one's aspect ratio (a 3440x1440 game
+    with a 16:9 HUD layout, GitHub issue #141), and the scene size recomputed below."""
+    if env.get('BB_AUTO_RENDER_RES') == '1':
+        for key in ('BB_RENDER_RES', 'BB_OUTPUT_RES', 'BB_AUTO_RENDER_RES'):
+            env.pop(key, None)
+    return env.get('BB_OUTPUT_RES') or ini_value(config, 'output_res') or ''
 
 
 def find_executable(name):
@@ -299,6 +368,74 @@ def force_utf8():
             stream.reconfigure(encoding='utf-8', errors='replace')
 
 
+# Hybrid graphics: a machine with an integrated GPU beside a discrete one enumerates both,
+# and the integrated card is normally device 0 - the index bb-probe uses when BB_GPU_ID is
+# unset. The port needs Vulkan 1.3 and robustBufferAccess2, which an older integrated driver
+# does not offer, and on a laptop the panel is often wired to the integrated GPU as well:
+# the window is created, no frame is ever presented, and the game sits on a black screen.
+GPU_DEVICES_TRIED = 4
+
+
+def caps_vram(caps, env, index):
+    """(MiB, discrete) for one Vulkan device index, 'end' past the last device, else None."""
+    try:
+        result = subprocess.run([str(caps), '--vram'], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                timeout=20, env={**env, 'BB_GPU_ID': str(index)},
+                                creationflags=no_console())
+        text = result.stdout.strip()
+        if 'outside the device list' in text:
+            return 'end'
+        size, kind = text.split()
+        return int(size), kind == '1'
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def caps_gpu_line(caps, env, index):
+    """The probe's "GPU: <name>, <discrete|integrated>, <MiB> MiB: ..." line, else ''."""
+    try:
+        result = subprocess.run([str(caps)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, timeout=20,
+                                env={**env, 'BB_GPU_ID': str(index)}, creationflags=no_console())
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    lines = result.stdout.strip().splitlines()
+    return lines[0] if lines else ''
+
+
+def select_discrete_gpu(env, caps):
+    """Point BB_GPU_ID at the discrete card when the machine has more than one GPU.
+
+    bb-gpu-capabilities reports "MiB discrete" for a device index, so the indices are asked
+    one at a time: device 0 is checked first, and only when it is the integrated card are the
+    others scanned for a discrete one (the largest wins). A BB_GPU_ID set by hand, or a
+    machine the probe cannot read, is left alone - the port then keeps its own choice.
+    """
+    if not caps.is_file():
+        return
+    # AMD's switchable-graphics Vulkan layer hides the discrete card on some hybrids.
+    env.setdefault('DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1', '1')
+    if env.get('BB_GPU_ID', '') != '':
+        return
+    first = caps_vram(caps, env, 0)
+    if not isinstance(first, tuple) or first[1]:
+        return  # no answer, or device 0 is already the discrete card
+    best = None
+    for index in range(1, GPU_DEVICES_TRIED):
+        found = caps_vram(caps, env, index)
+        if found == 'end':
+            break
+        if isinstance(found, tuple) and found[1] and (best is None or found[0] > best[1]):
+            best = (index, found[0])
+    if best is None:
+        return  # a single integrated GPU: the port's own choice stands
+    env['BB_GPU_ID'] = str(best[0])
+    line = caps_gpu_line(caps, env, best[0])
+    print(f'GPU: device 0 is integrated, using Vulkan device {best[0]} (BB_GPU_ID={best[0]})'
+          + (f'; {line}' if line else ''))
+
+
 def main():
     force_utf8()
     args = sys.argv[1:]
@@ -333,6 +470,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     env.setdefault('BB_CONFIG', str(data / 'bbport.ini'))
     config = env['BB_CONFIG']
+    steam_layers_off(env)
     if not env.get('BB_FSR411_DIR') and not (PORT / 'fsr4_411').is_dir() and (data / 'fsr4_411').is_dir():
         env['BB_FSR411_DIR'] = str(data / 'fsr4_411')
 
@@ -345,10 +483,14 @@ def main():
         if clang64.is_dir():
             env['PATH'] = f'{clang64}{os.pathsep}{env.get("PATH", "")}'
 
+    # Hybrid graphics (an integrated GPU beside a discrete one): see select_discrete_gpu.
+    select_discrete_gpu(env, probe.parent / 'bb-gpu-capabilities.exe')
+
     game = Path(env.get('BB_GAME_DIR', PORT.parent / 'CUSA03173'))
     if not (game / 'eboot.bin').is_file():
         fail(f'No eboot.bin in {game} (set BB_GAME_DIR).')
     original_game = game.resolve()
+    remove_stale_views(out, original_game)
     # A broken extraction (stale compressed sectors): the game would hang loading its shaders,
     # with no error. (parsifal295, Supermedo PR #64; bbport 0.5-pre4.) BB_SKIP_GAME_CHECK=1 skips it.
     if env.get('BB_SKIP_GAME_CHECK') != '1':
@@ -390,7 +532,7 @@ def main():
     from patches import OUTPUT_SIZE, eboot_is_109, game_app_version, hud_canvas, output_size
     hud_layer = Path(out) / 'hud_layout'
     shutil.rmtree(hud_layer, ignore_errors=True)
-    output_res = env.get('BB_OUTPUT_RES') or ini_value(config, 'output_res') or ''
+    output_res = startup_output_res(env, config)
     canvas = hud_canvas(output_size({'output_res': output_res}))
     # Only for the clean 1.09 eboot.bin: patches.py leaves a modified one unpatched (16:9), and
     # widened menus on a 16:9 game came out stretched (Supermedo PR #90, emurphy04).
@@ -428,8 +570,9 @@ def main():
         sys.path.insert(0, str(PORT / 'scripts'))
         import mods as mod_list
         try:
-            keyboard = KEYBOARD_PROMPTS in mod_list.selected(Path(env.get('BB_MODS_DIR', data / 'mods')),
-                                                           Path(env.get('BB_MODS_CONFIG', data / 'mods.json')))
+            selected = mod_list.selected(Path(env.get('BB_MODS_DIR', data / 'mods')),
+                                         Path(env.get('BB_MODS_CONFIG', data / 'mods.json')))
+            keyboard = any(name in selected for name in KEYBOARD_PROMPTS)
         except (OSError, ValueError):
             pass
     env['BB_BUTTON_PROMPTS'] = 'Keyboard' if keyboard else ''
@@ -468,10 +611,6 @@ def main():
             patched = False
             print('Game files: eboot.bin is not the 01.09 build the community patches were made for; '
                   '30 FPS, no effect patches')
-        # Sizes chosen below for the previous launch are recomputed after an in-game restart.
-        if env.get('BB_AUTO_RENDER_RES') == '1':
-            for key in ('BB_RENDER_RES', 'BB_OUTPUT_RES', 'BB_AUTO_RENDER_RES'):
-                env.pop(key, None)
         fps = env.get('BB_FPS', 'uncap') if patched else '30'
         scaled_render = scaled_output = None
         if not env.get('BB_RENDER_RES'):
@@ -489,12 +628,17 @@ def main():
                 caps = probe.parent / 'bb-gpu-capabilities.exe'
                 live = '0'  # without the checker, the safe answer: no live changes
                 if caps.is_file():
-                    result = subprocess.run([str(caps), '--live-resolution'], stdin=subprocess.DEVNULL,
-                                            stdout=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
-                                            creationflags=no_console())
-                    live = result.stdout.strip() if result.returncode == 0 else '0'
+                    try:
+                        result = subprocess.run([str(caps), '--live-resolution'], stdin=subprocess.DEVNULL,
+                                                stdout=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
+                                                creationflags=no_console())
+                        live = result.stdout.strip() if result.returncode == 0 else '0'
+                    except OSError as error:
+                        if getattr(error, 'winerror', None) in BLOCKED_BY_POLICY:
+                            fail(blocked_message(caps))
+                        print(f'Live resolution: {caps.name} did not run ({error}); startup patch')
             live = '1' if live == '1' or not patched else '0'
-        from patches import hud_canvas, ultrawide
+        from patches import hud_canvas, is_16_9, ultrawide
         env.pop('BB_ASPECT_PATCHED', None)
         if scaled_output or env.get('BB_OUTPUT_RES'):
             movie_output = scaled_output or env['BB_OUTPUT_RES']
@@ -507,7 +651,7 @@ def main():
                 env['BB_UI_RES'] = f'{canvas[0]}x{canvas[1]}'
                 env['BB_ASPECT_PATCHED'] = '1'
                 print(f'Output {movie_output}: ultrawide, HUD {env["BB_UI_RES"]}; aspect changes require restart')
-            elif ow * 9 != oh * 16:
+            elif not is_16_9((ow, oh)):
                 live = '0'
                 env['BB_UI_RES'] = movie_output
                 print('Aspect correction: centered 16:9 stage; aspect changes require restart')
@@ -600,16 +744,21 @@ def main():
                    '--user', str(user_dir),
                    '--timeout', env.get('BB_TIMEOUT', '0'), *args]
         # No stdin: an inherited pipe (shells such as Git Bash) cost the game its console output.
-        # With BB_RUN_LOG the game's output goes through run.py, which writes the time in front
-        # of each line. Without it the game keeps the output it inherits (a console, or a
-        # launcher's pipe that an in-game restart hands on to the next run).
-        if runlog and os.environ.get('BB_RUN_LOG'):
-            game_proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                         stderr=subprocess.STDOUT, creationflags=no_console())
-            output = runlog.relay(game_proc.stdout)
-        else:
-            game_proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, creationflags=no_console())
-            output = None
+        try:
+            # With BB_RUN_LOG the game's output goes through run.py, which writes the time in front
+            # of each line. Without it the game keeps the output it inherits (a console, or a
+            # launcher's pipe that an in-game restart hands on to the next run).
+            if runlog and os.environ.get('BB_RUN_LOG'):
+                game_proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                             stderr=subprocess.STDOUT, creationflags=no_console())
+                output = runlog.relay(game_proc.stdout)
+            else:
+                game_proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, creationflags=no_console())
+                output = None
+        except OSError as error:
+            if getattr(error, 'winerror', None) in BLOCKED_BY_POLICY:
+                fail(blocked_message(probe))
+            raise
         started = []
         try:
             started = start_companions(data, env, game_proc.pid)

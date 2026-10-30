@@ -24,6 +24,11 @@ static std::atomic<bool> g_menu_pointer{false}; // below: a menu shows the point
 static std::atomic<bool> g_window_focused{false};
 static std::atomic<int> g_window_points_w{0}, g_window_points_h{0};
 static bool g_pad_in_use = false; // window thread: the last input came from a controller
+static std::atomic<SDL_DisplayID> g_game_display{0}; // ChooseDisplay's answer, 0 before the window
+
+// The monitor the game's window opened on (BB_DISPLAY), 0 before it opened: bbgpu.cpp's display
+// refresh rate is that monitor's, not the primary one's.
+SDL_DisplayID BbGameDisplay() { return g_game_display.load(); }
 
 namespace Frontend {
 
@@ -127,6 +132,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
     const SDL_DisplayID display = ChooseDisplay();
+    g_game_display = display;
     s32 window_w = width_, window_h = height_;
     WindowedSize(display, window_w, window_h);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
@@ -185,7 +191,22 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     }
 }
 
+// The pointer hidden by the port (one hide, one show): SDL_CursorVisible() does not follow the
+// Win32 ShowCursor counter.
+static bool cursor_hidden_by_port = false;
+
 WindowSDL::~WindowSDL() {
+    // Never leave the desktop with a captured mouse or a hidden pointer, also when the game
+    // closes while the camera holds the mouse.
+    if (mouse_captured) {
+        mouse_captured = false;
+        SDL_SetWindowRelativeMouseMode(window, false);
+        SetMouseCaptured(false);
+    }
+    if (cursor_hidden_by_port) {
+        SDL_ShowCursor();
+        cursor_hidden_by_port = false;
+    }
     SDL_DestroyWindow(window);
 }
 
@@ -326,6 +347,17 @@ bool WindowSDL::PollEvents() {
             break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             mouse_armed = false;
+            // A screenshot tool or another app can take focus while relative mode is on:
+            // release the clip and show the pointer instead of carrying both into the background.
+            if (mouse_captured) {
+                mouse_captured = false;
+                SDL_SetWindowRelativeMouseMode(window, false);
+                SetMouseCaptured(false);
+            }
+            if (cursor_hidden_by_port) {
+                SDL_ShowCursor();
+                cursor_hidden_by_port = false;
+            }
             break;
         case SDL_EVENT_MOUSE_WHEEL:
             NoteMouseWheel(event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -event.wheel.y : event.wheel.y);
@@ -338,6 +370,16 @@ bool WindowSDL::PollEvents() {
 #endif
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+            // Release relative mode (its clip) and the pointer before the window goes away.
+            if (mouse_captured) {
+                mouse_captured = false;
+                SDL_SetWindowRelativeMouseMode(window, false);
+                SetMouseCaptured(false);
+            }
+            if (cursor_hidden_by_port) {
+                SDL_ShowCursor();
+                cursor_hidden_by_port = false;
+            }
             is_open = false;
             break;
         default:
@@ -348,9 +390,18 @@ bool WindowSDL::PollEvents() {
     // mouse_hide_cursor keeps it hidden over the game and its menus too (mouse-to-pad tools,
     // #88), but not over the guide menu or the map, which are used with the pointer.
     const bool hide_always = BbSettings::Get().mouse_hide_cursor.load() && !BbOverlay::ReleasesMouse();
-    if (const bool show = (!g_pad_in_use && !hide_always) || !focused || text_active;
-        !mouse_captured && SDL_CursorVisible() != show) {
-        show ? SDL_ShowCursor() : SDL_HideCursor();
+    // Track our own hide flag: SDL_CursorVisible() does not mirror the Win32 ShowCursor counter,
+    // so toggling on it could hide the pointer repeatedly and leave the counter negative (the
+    // pointer then stays gone system-wide after a screenshot tool takes focus).
+    const bool show = (!g_pad_in_use && !hide_always) || !focused || text_active;
+    if (!mouse_captured) {
+        if (show && cursor_hidden_by_port) {
+            SDL_ShowCursor();
+            cursor_hidden_by_port = false;
+        } else if (!show && !cursor_hidden_by_port) {
+            SDL_HideCursor();
+            cursor_hidden_by_port = true;
+        }
     }
     return is_open;
 }

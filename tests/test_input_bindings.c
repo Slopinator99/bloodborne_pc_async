@@ -42,9 +42,28 @@ int main(void) {
     memset(keys, 0, sizeof(keys));
     keys[SDL_GetScancodeFromName("W")] = keys[SDL_GetScancodeFromName("D")] = keys[SDL_GetScancodeFromName("Left Alt")] = true;
     bb_bindings_apply(keys, SDL_SCANCODE_COUNT, 0, &o);
-    assert(o.lx > 128 && o.lx < 175 && o.ly < 128 && o.ly > 81);  /* a walk, diagonally */
+    assert(o.lx > 170 && o.lx < 195 && o.ly < 86 && o.ly > 61);  /* a walk, diagonally */
+    press(NULL, 0);
+    memset(keys, 0, sizeof(keys));
+    keys[SDL_GetScancodeFromName("W")] = keys[SDL_GetScancodeFromName("Left Alt")] = true;
+    bb_bindings_apply(keys, SDL_SCANCODE_COUNT, 0, &o);
+    /* A walk forward: past the game's dead zone (a third of a push stood still, #205), short
+     * of a run. */
+    assert(o.lx == 128 && o.ly >= 40 && o.ly <= 64);
     o = press("G", 0);
     assert(o.buttons == 0x100000 && o.touch_side == 0);  /* gestures: the touchpad's left */
+    /* Arrows sent without the extended-key flag (AutoHotkey, #105) arrive as the numpad's. */
+    o = press("Keypad 8", 0);
+    assert(o.buttons == 0x10);                      /* D-pad Up */
+    o = press("Keypad 4", 0);
+    assert(o.buttons == 0x80);                      /* switch left weapon: d-pad left */
+    assert(bb_bindings_parse("dpad_up", "Keypad 8"));
+    o = press("Up", 0);
+    assert(o.buttons == 0x10);                      /* and the other way round */
+    assert(bb_bindings_parse("lock_on", "Keypad 4"));
+    o = press("Keypad 4", 0);
+    assert(o.buttons == 0x4);                       /* a numpad key with its own action keeps it */
+    assert(bb_bindings_parse("dpad_up", "Up") && bb_bindings_parse("lock_on", "Q"));
 
     /* Movement smoothing (issue #4): W, then W+A swings the stick over a few frames. */
     press(NULL, 0);
@@ -94,12 +113,14 @@ int main(void) {
     /* An ini file: only key_ lines are read. */
     const char *path = "test_input_bindings.ini";
     FILE *f = fopen(path, "w");
-    fputs("upscaler=dlss\nkey_roll = Left Ctrl\n# key_attack=Mouse2\nmove_smoothing=100\n", f);
+    assert(bb_bindings_pad_back_side() == 0);       /* View / Back: Gestures by default */
+    fputs("upscaler=dlss\nkey_roll = Left Ctrl\n# key_attack=Mouse2\nmove_smoothing=100\npad_back = effects\n", f);
     fclose(f);
     bb_bindings_load(path);
     remove(path);
     o = press("Left Ctrl", 0);
     assert(o.buttons == 0x2000);                    /* roll moved to Left Ctrl, L3 gave it up */
+    assert(bb_bindings_pad_back_side() == 1);       /* pad_back=effects: Personal Effects (#228) */
     assert(bb_binding_mouse(BIND_ATTACK) == 1);     /* the commented line changed nothing */
     press(NULL, 0);
     press("W", 0);
@@ -107,6 +128,25 @@ int main(void) {
     keys[SDL_GetScancodeFromName("W")] = keys[SDL_GetScancodeFromName("A")] = true;
     bb_bindings_apply(keys, SDL_SCANCODE_COUNT, 0, &o);
     assert(o.lx == 1);                              /* move_smoothing=100: off, at once */
+
+    /* Combinations: Shift + left click is the strong attack on its own, and a plain left click
+     * is still the attack - the held combination owns its inputs. */
+    assert(bb_bindings_parse("attack", "Mouse1"));
+    assert(bb_bindings_parse("strong_attack", "Left Shift+Mouse1"));
+    o = press("Left Shift", 1u << 0);
+    assert(o.buttons == 0x200);                     /* R2 only, not R1 as well */
+    o = press(NULL, 1u << 0);
+    assert(o.buttons == 0x800);                     /* left click alone: R1 */
+    /* Up to three bindings on one action, a fourth is dropped. */
+    BindSlot slots[BIND_SLOTS];
+    assert(bb_bindings_parse("interact", "E, F, G"));
+    assert(bb_binding_slots(BIND_INTERACT, slots, BIND_SLOTS) == 3);
+    o = press("F", 0);
+    assert(o.buttons == 0x4000);
+    o = press("G", 0);
+    assert(o.buttons == 0x4000);
+    assert(bb_bindings_parse("interact", "E, F, G, H"));
+    assert(bb_binding_slots(BIND_INTERACT, slots, BIND_SLOTS) == 3);
     puts("input bindings: ok");
     return 0;
 }
