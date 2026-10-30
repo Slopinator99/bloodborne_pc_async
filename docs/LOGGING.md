@@ -50,7 +50,7 @@ and where were the threads. This is what the port writes, and what to send with 
 | `BB_HANG_SECONDS=N` | The hang limit, default 10. |
 | `BB_TEST_HANG_FRAME=N` | Test: stalls the GPU thread for 15 s at frame N (the HANG line, the dump, HANG over). |
 | `BB_TEST_CRASH_FRAME=N` | Test: faults at frame N (the Fault lines, the dump, exit code 3). |
-| `BB_HOST_COPY_SOURCE_CAP=N` | Test: how many host-copy ranges the scheduler tracks (default 512). `2` reproduced the freeze of 2026-10-25 on the unfixed code at frame 2. |
+| `BB_HOST_COPY_SLOTS=N` | Test: use only N slots of the host-copy source table (default 4096; `1` makes every granule collide, so every guest write waits). The old capped list froze the game at frame 2 with a cap of 2; the table never blocks. |
 | `BB_FRAME_DUMP_TRIGGER`, `BB_DUMP_TRIGGER`, `BB_DUMP_DIR` | Picture dumps of the displayed frame and of the upscaler's inputs (see `docs/upscaler.md`). |
 
 Reading a dump without a debugger: `python tools/minidump_threads.py hang-….dmp out/bb-probe.exe` lists

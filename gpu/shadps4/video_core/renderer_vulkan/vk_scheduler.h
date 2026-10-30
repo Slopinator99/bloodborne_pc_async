@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -818,9 +819,12 @@ public:
     /// bbport: narrowed WaitHostCopies for a synchronous guest write to
     /// [address, address + size): waits only if a queued host copy reads an overlapping
     /// guest range and may still be running (WRITE_DATA/DMA stalled on unrelated small
-    /// copies otherwise). Ranges are noted at queue time (NoteHostCopySource); unknown
-    /// ranges fall back to the full wait, so skipping is always safe.
-    /// BB_RANGED_HOST_WAITS=0: the unconditional wait.
+    /// copies otherwise). Sources are noted when a copy is queued (NoteHostCopySource) in a
+    /// fixed table by 64 KiB granule; granules that collide, and notes too large for the table,
+    /// count as pending, so skipping a wait is always safe and noting never blocks.
+    /// BB_RANGED_HOST_WAITS=0: the unconditional wait. (The table is upstream bbport's design,
+    /// 0.7; this tree's first version kept a capped list and could wait for a copy it had not
+    /// queued yet: the freeze of 2026-10-25.)
     void WaitHostCopiesFor(u64 address, u64 size);
 
     /// Runs `copy` on the recording thread in order with the commands (the thread spins for
@@ -830,7 +834,7 @@ public:
     void RecordHostCopy(Func&& copy, u64 src_addr = 0, u64 src_size = 0) {
         const u64 seq = ++host_copies_issued;
         if (src_size != 0) {
-            NoteHostCopySource(src_addr, src_size, /*pool=*/false, seq);
+            NoteHostCopySource(src_addr, src_size);
         }
         Record([copy = std::forward<Func>(copy), this,
                 seq](vk::CommandBuffer) {
@@ -839,10 +843,9 @@ public:
         });
     }
 
-    /// Notes a queued host copy's guest source range for WaitHostCopiesFor. pool: the copy
-    /// runs on the BbCopy threads (pruned by full waits) rather than the recording thread
-    /// (pruned by its sequence). Must be called before the copy is queued.
-    void NoteHostCopySource(u64 address, u64 size, bool pool, u64 seq = 0);
+    /// Notes the guest range a host copy about to be queued reads (on the recording thread or
+    /// the BbCopy threads) for WaitHostCopiesFor. Call it before the copy is queued. Never waits.
+    void NoteHostCopySource(u64 address, u64 size);
 
     /// bbport: runs `signal` once the guest memory copies issued so far are done, without
     /// waiting here: the recording thread reaches it after the copies queued before it and hands
@@ -955,32 +958,20 @@ private:
     bool direct_mode = false; ///< the command buffer is recorded on the caller's thread
     u64 host_copies_issued = 0;
     std::atomic<u64> host_copies_done{0};
-    // bbport: guest source ranges of queued host copies, for WaitHostCopiesFor. Recorder
-    // entries carry their host_copies_issued sequence (pruned by the done watermark); pool
-    // entries carry a note order (pruned by full waits only). note_seq orders all entries.
-    std::mutex host_copy_sources_mutex;
-    struct HostCopySource {
-        u64 seq;
-        u64 start;
-        u64 end; // exclusive
-        bool pool;
-        u64 note;
+    // bbport: guest sources of queued host copies by 64 KiB granule in a direct-mapped table, for
+    // WaitHostCopiesFor. A slot is pending while its note is newer than the last completed full
+    // wait; a slot two pending granules share is a wildcard (any granule mapping there counts).
+    struct HostCopySlot {
+        u64 granule = 0;
+        u64 seq = 0;
     };
-    std::deque<HostCopySource> host_copy_sources;
-    /// Highest recorder-copy sequence whose range could not be tracked (the table was full):
-    /// narrowed waits wait for it fully (see NoteHostCopySource).
-    std::atomic<u64> host_copy_untracked_seq{0};
-    u64 host_copy_note_seq = 0;
-    /// How many copy ranges are tracked (512; BB_HOST_COPY_SOURCE_CAP lowers it for tests).
-    static size_t HostCopySourceCap() {
-        static const size_t cap = [] {
-            const char* env = std::getenv("BB_HOST_COPY_SOURCE_CAP");
-            return env && *env ? std::max<size_t>(1, std::strtoull(env, nullptr, 10)) : size_t(512);
-        }();
-        return cap;
-    }
-    // Erases entries a full wait covered (see .cpp). Caller holds host_copy_sources_mutex.
-    void PruneHostCopySources(u64 boundary);
+    static constexpr u32 HostCopySlots = 4096;
+    static constexpr u64 HostCopyWildcard = ~u64(0);
+    std::mutex host_copy_sources_mutex;
+    std::array<HostCopySlot, HostCopySlots> host_copy_slots{};
+    u64 host_copy_source_seq = 0;
+    u64 host_copy_sources_done = 0; ///< notes up to this one are copied
+    u64 host_copy_big_seq = 0;      ///< last note too large for the table (counts as everywhere)
     std::atomic<u64> deferred_signals_issued{0}; ///< by the thread recording (A or B)
     std::shared_ptr<std::atomic<u64>> deferred_signals_done =
         std::make_shared<std::atomic<u64>>(0);

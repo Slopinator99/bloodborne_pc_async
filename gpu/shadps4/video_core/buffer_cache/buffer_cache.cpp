@@ -170,7 +170,7 @@ void BufferCache::SmallGuestCopy(const BbCopy::Item& item) {
         scheduler.RecordHostCopy([item] { item.run(item); }, item.source, item.size);
         return;
     }
-    scheduler.NoteHostCopySource(item.source, item.size, /*pool=*/true);
+    scheduler.NoteHostCopySource(item.source, item.size);
     BbCopy::QueueCopy(item);
 }
 
@@ -412,7 +412,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_add
             } else {
                 // bbport: noted like the small copies, or a narrowed WaitHostCopiesFor would
                 // skip BbCopy::WaitAsync and let the guest see a write while this still reads.
-                scheduler.NoteHostCopySource(item.source, item.size, /*pool=*/true);
+                scheduler.NoteHostCopySource(item.source, item.size);
                 BbCopy::Async([item] { item.run(item); });
             }
         }
@@ -773,7 +773,7 @@ const Buffer* BufferCache::UploadCopies(const Buffer* arena, std::span<vk::Buffe
         };
         for (auto& copy : copies) {
             // bbport: noted before the group is queued (see WaitHostCopiesFor).
-            scheduler.NoteHostCopySource(copy.dstOffset, copy.size, /*pool=*/true);
+            scheduler.NoteHostCopySource(copy.dstOffset, copy.size);
             group->push_back({copy.dstOffset, staging.mapped + copy.srcOffset, copy.size});
             group_bytes += copy.size;
             copy.srcOffset += staging.offset;
