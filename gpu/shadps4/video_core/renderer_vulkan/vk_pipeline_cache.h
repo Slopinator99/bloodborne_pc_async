@@ -134,7 +134,8 @@ public:
     bool LoadPipelineStage(Serialization::Archive& ar, size_t stage);
 
     const GraphicsPipeline* GetGraphicsPipeline(const DrawIndirectParams params = {},
-                                                const PreparedDraw* prepared = nullptr);
+                                                const PreparedDraw* prepared = nullptr,
+                                                bool indirect = false);
 
     /// bbport: worker side of draw preparation: selects the pipeline key for `sel.regs` without
     /// creating anything. False when a program or permutation does not exist yet.
@@ -259,7 +260,7 @@ private:
     bool async_compute = false;            ///< BB_ASYNC_COMPUTE=1: compute pipelines go async too
     u64 async_waited = 0;                  ///< draws that waited for a pipeline they needed now
     std::atomic<bool> async_stop{false};
-    bool async_enabled = false;
+    bool async_enabled = true; ///< BB_ASYNC_PIPELINES=0 turns it off
     // Cumulative jobs; pending = enqueued - finished.
     std::atomic<u64> async_enqueued{0}, async_finished{0};
     /// bbport: draws skipped on async placeholders since the last drain (see the

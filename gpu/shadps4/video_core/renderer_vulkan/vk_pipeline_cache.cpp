@@ -363,18 +363,18 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     // calls WarmUp() once object motion has fixed its buffer addresses (motion shader variants
     // embed them, so the shader pre-build translates those for this session).
 
-    // bbport: background pipeline compilation, off unless requested (BB_ASYNC_PIPELINES=1).
+    // bbport: background pipeline compilation, on unless BB_ASYNC_PIPELINES=0 (as upstream 0.7).
     // A miss enqueues an owned snapshot and skips the draw this frame; the worker inserts
     // the pipeline for the following frames.
     if (const char* env = std::getenv("BB_ASYNC_PIPELINES")) {
-        async_enabled = env[0] == '1';
+        async_enabled = env[0] != '0';
     }
     if (const char* env = std::getenv("BB_ASYNC_COMPUTE")) {
         async_compute = env[0] == '1';
     }
     if (async_enabled) {
         StartAsyncThread();
-        std::printf("Async pipeline compilation on (%zu workers, BB_ASYNC_PIPELINES=1; only passes "
+        std::printf("Async pipeline compilation on (%zu workers, BB_ASYNC_PIPELINES=0 turns it off; only passes "
                     "drawn every frame go without a draw, the rest compile at once; compute %s)\n",
                     async_threads.size(), async_compute ? "async" : "at once");
     }
@@ -665,7 +665,8 @@ void NoteDrawTarget(const AmdGpu::Regs& regs) {
     }
 }
 
-bool AsyncSkippable(const Instance& instance, const AmdGpu::Regs* regs, bool motion, u32& reason) {
+bool AsyncSkippable(const Instance& instance, const AmdGpu::Regs* regs, bool motion, bool indirect,
+                    u32& reason) {
     reason = 2;
     // Not a draw whose pipeline depends on its vertex buffers (no dynamic vertex input). A
     // motion-vector pipeline may skip too: a frame or two without the motion of a new object
@@ -688,6 +689,14 @@ bool AsyncSkippable(const Instance& instance, const AmdGpu::Regs* regs, bool mot
         reason = 0;
         return false;
     }
+    // A full-screen pass (one triangle or quad: lighting, fog, post-processing) waits for its
+    // pipeline: going without one for a frame left whole frames grey (upstream bbport 0.7). So
+    // does an indirect draw (its size is unknown here); what may go without is geometry.
+    constexpr u32 FullScreenIndices = 12;
+    if (indirect || regs->num_indices <= FullScreenIndices) {
+        reason = 2;
+        return false;
+    }
     reason = 1;
     constexpr u32 PerFrameStreak = 8;
     const u64 target = DrawTarget(*regs);
@@ -697,7 +706,8 @@ bool AsyncSkippable(const Instance& instance, const AmdGpu::Regs* regs, bool mot
 } // namespace
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
-                                                           const PreparedDraw* prepared) {
+                                                           const PreparedDraw* prepared,
+                                                           bool indirect) {
     used_prepared = nullptr;
     if (async_enabled) {
         NoteDrawTarget(liverpool->regs);
@@ -726,7 +736,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         // key misses again without re-enqueueing and a finished one hits. Any other draw needs
         // its pipeline now: it waits for a pending one and compiles a new one right here.
         u32 sync_reason = 2;
-        const bool skippable = AsyncSkippable(instance, sel.regs, sel.motion, sync_reason);
+        const bool skippable = AsyncSkippable(instance, sel.regs, sel.motion, indirect, sync_reason);
         std::unique_lock lk{pipelines_mutex};
         auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
         bool compile_here = false;
