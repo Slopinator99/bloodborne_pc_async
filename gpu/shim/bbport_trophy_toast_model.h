@@ -26,6 +26,7 @@ enum class Theme : int {
 constexpr std::array<const char*, 5> kGradeFileNames{"trophy", "bronze", "silver", "gold", "platinum"};
 
 struct Options {
+    bool enabled = false;         ///< show a notification when the game unlocks a trophy (previews always show)
     Theme theme = Theme::Original;
     int volume = 80;              ///< 0..100, the notification sound only
     bool muted = false;

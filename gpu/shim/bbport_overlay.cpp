@@ -1149,6 +1149,10 @@ bool FoldSection(const char* title, const char* hint, bool* open) {
 // animations come from files in user/custom_trophy (README.md).
 void ToastSection(const std::vector<BbTrophies::Entry>& entries) {
     using BbToast::Theme;
+    {
+        auto on = BbToast::GetOptions();
+        if (Toggle("Show trophy notifications", &on.enabled)) BbToast::SetOptions(on);
+    }
     static bool open = false; // closed: the page opens on the trophy list
     if (!FoldSection("TROPHY NOTIFICATIONS", "Theme, sound and previews", &open)) return;
     auto o = BbToast::GetOptions();
@@ -2017,7 +2021,8 @@ void TrophyUnlocked(int id) {
         std::scoped_lock lock{trophy_mutex};
         trophies[id] = 1;
     }
-    BbToast::Enqueue(id, false);
+    // Off by default: the history and the guide still record the unlock.
+    if (BbToast::GetOptions().enabled) BbToast::Enqueue(id, false);
 }
 
 // Called for every presented image: the interval for the FPS readout and BB_FPS_LOG.

@@ -89,7 +89,9 @@ Options ParseOptions(std::string_view text) {
         int i = 0;
         float f = 0.0f;
         bool b = false;
-        if (key == "theme") {
+        if (key == "enabled") {
+            if (ToBool(value, b)) o.enabled = b;
+        } else if (key == "theme") {
             for (int t = 0; t < int(Theme::Count); ++t)
                 if (value == kThemeKeys[t]) o.theme = Theme(t);
         } else if (key == "volume") {
@@ -122,6 +124,8 @@ std::string FormatOptions(const Options& o) {
     out << "# Trophy notifications. The guide (Insert / L3+R3 > Achievements) writes this file;\n"
         << "# it can also be edited by hand while the game is closed. Sounds, pictures and\n"
         << "# animations go beside it, see README.md (Custom trophy notifications).\n"
+        << "# enabled: 1 shows a notification when the game unlocks a trophy (off by default)\n"
+        << "enabled=" << int(o.enabled) << "\n"
         << "# theme: original, card, card_cinematic, corner\n"
         << "theme=" << ThemeKey(o.theme) << "\n"
         << "# volume: 0-100; muted: 0 or 1\n"

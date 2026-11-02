@@ -118,6 +118,7 @@ static std::string Wav() {
 static void TestOptions() {
     const Options defaults = ParseOptions("");
     assert(defaults == Options{});
+    assert(!defaults.enabled && ParseOptions("enabled=1\n").enabled);
     assert(defaults.theme == Theme::Original && defaults.volume == 80 && !defaults.muted);
 
     // Values, clamping, comments, a BOM, CRLF and spaces around '='.
@@ -146,6 +147,7 @@ static void TestOptions() {
 
     // What the guide writes reads back the same.
     Options all;
+    all.enabled = true;
     all.theme = Theme::Card;
     all.volume = 35;
     all.muted = true;
