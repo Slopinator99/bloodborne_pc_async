@@ -35,6 +35,71 @@
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
+// bbport: input freshness (BB_LATENCY_LOG=1 or BB_FRAME_STATS=1): how often the window thread
+// takes the input events and how old they are when the game reads the pad, every 5 seconds.
+namespace {
+std::atomic<s64> g_last_pump_ns{0};
+std::atomic<s64> g_pump_sum_ns{0}, g_pump_max_ns{0};
+std::atomic<u32> g_pumps{0};
+s64 SteadyNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+bool InputLog() {
+    static const bool value = [] {
+        const char* a = std::getenv("BB_LATENCY_LOG");
+        const char* b = std::getenv("BB_FRAME_STATS");
+        return (a && a[0] == '1') || (b && b[0] == '1');
+    }();
+    return value;
+}
+void NoteInputPump() {
+    const s64 now = SteadyNs();
+    const s64 last = g_last_pump_ns.exchange(now, std::memory_order_relaxed);
+    if (last && InputLog()) {
+        const s64 gap = now - last;
+        g_pump_sum_ns += gap;
+        ++g_pumps;
+        s64 max = g_pump_max_ns.load(std::memory_order_relaxed);
+        while (gap > max && !g_pump_max_ns.compare_exchange_weak(max, gap)) {
+        }
+    }
+}
+} // namespace
+
+extern "C" void bbgpu_input_note_read(void) {
+    if (!InputLog()) {
+        return;
+    }
+    static std::mutex mutex;
+    static s64 window_start = 0, age_sum = 0, age_max = 0;
+    static u32 reads = 0;
+    const s64 now = SteadyNs();
+    std::scoped_lock lock{mutex};
+    const s64 last = g_last_pump_ns.load(std::memory_order_relaxed);
+    if (last) {
+        const s64 age = now - last;
+        age_sum += age;
+        age_max = std::max(age_max, age);
+        ++reads;
+    }
+    if (!window_start) {
+        window_start = now;
+    }
+    if (now - window_start >= 5'000'000'000LL && reads) {
+        const u32 pumps = g_pumps.exchange(0);
+        const s64 pump_sum = g_pump_sum_ns.exchange(0), pump_max = g_pump_max_ns.exchange(0);
+        std::printf("Input: %u pad reads/s, input %.2f ms old when read (worst %.2f); events "
+                    "taken every %.2f ms (worst %.2f)\n",
+                    u32(reads * 1e9 / double(now - window_start)), age_sum / 1e6 / reads,
+                    age_max / 1e6, pumps ? pump_sum / 1e6 / pumps : 0.0, pump_max / 1e6);
+        window_start = now;
+        age_sum = age_max = 0;
+        reads = 0;
+    }
+}
+
 extern "C" {
 // runtime_memory.c
 int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
@@ -294,6 +359,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     const std::string title = config->title ? config->title : "Bloodborne";
     const s32 width = config->width, height = config->height;
     g_window_thread = std::thread([title, width, height] {
+        // (input measurement: see bbgpu_input_note_read)
         Common::SetCurrentThreadName("bb:window");
         auto* window = new Frontend::WindowSDL(width, height, title.c_str());
         {
@@ -304,7 +370,9 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
         g_window_cv.notify_all();
         StartHangWatchdog();
         while (window->PollEvents()) {
-            SDL_Delay(2);
+            NoteInputPump();
+            // Keyboard and mouse events reach the game at most a millisecond late.
+            SDL_Delay(1);
         }
         LOG_INFO(Frontend, "Window closed by user");
         {

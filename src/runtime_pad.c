@@ -313,6 +313,9 @@ static void sample_host(PadData *d) {
     d->connected=1; d->connected_count=connected_count ? connected_count : 1;
     d->timestamp=now_us();
     SDL_Gamepad *g=current_gamepad();
+    /* The controller as it is now, not as the window thread last took its events (up to a
+     * millisecond or two before): SDL locks its joysticks for this itself. */
+    if (g) SDL_UpdateGamepads();
     /* Sampled even while the settings menu or Hunter's Atlas's map owns input: the map reads
      * it (bbgpu_atlas_route_pad), and sample_game hands the game neutral input afterwards. */
     int nkeys=0;
@@ -570,7 +573,9 @@ static BbAtlasRelease atlas_release;
 static volatile uint32_t delivered_buttons;
 uint32_t runtime_pad_buttons(void) { return delivered_buttons; }
 static void sample_game(PadData *d);
+void bbgpu_input_note_read(void); /* gpu/shim/bbgpu.cpp: input freshness log */
 static void sample(PadData *d) {
+    bbgpu_input_note_read();
     sample_game(d);
     finish_touch(d);
     delivered_buttons=d->buttons;
