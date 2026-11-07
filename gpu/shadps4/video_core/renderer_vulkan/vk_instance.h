@@ -314,6 +314,21 @@ public:
     }
 
     /// bbport: VK_NV_low_latency2 is enabled for its boost hint (Swapchain), without Streamline.
+    /// bbport: VK_KHR_present_id is enabled (present ids for the latency markers).
+    bool IsPresentIdEnabled() const {
+        return present_id;
+    }
+
+    /// bbport: NVIDIA Reflex (VK_NV_low_latency2) is enabled for LowLatency.
+    bool IsNvLowLatencyEnabled() const {
+        return nv_low_latency;
+    }
+
+    /// bbport: AMD Anti-Lag 2 (VK_AMD_anti_lag) is enabled.
+    bool IsAmdAntiLagEnabled() const {
+        return amd_anti_lag;
+    }
+
     bool IsLowLatencyBoostEnabled() const {
         return low_latency_boost;
     }
@@ -595,6 +610,9 @@ private:
     bool compute_shader_derivatives{};
     bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
     bool device_fault{};            // bbport: VK_EXT_device_fault (DeviceLost)
+    bool present_id{};
+    bool nv_low_latency{};
+    bool amd_anti_lag{};
     bool low_latency_boost{};       // bbport: VK_NV_low_latency2 (+ VK_KHR_present_id), boost hint
     bool supports_memory_budget{};
     bool supports_block_texel_view{};

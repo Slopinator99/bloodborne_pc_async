@@ -15,6 +15,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_low_latency.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #include <vk_mem_alloc.h>
@@ -271,7 +272,8 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT, vk::PhysicalDeviceShaderClockFeaturesKHR,
         vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR,
         vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE,
-        vk::PhysicalDeviceFaultFeaturesEXT>();
+        vk::PhysicalDeviceFaultFeaturesEXT, vk::PhysicalDevicePresentIdFeaturesKHR,
+        vk::PhysicalDeviceAntiLagFeaturesAMD>();
     features = feature_chain.get().features;
 
     const vk::StructureChain properties_chain = physical_device.getProperties2<
@@ -433,7 +435,23 @@ bool Instance::CreateDevice() {
         return std::ranges::find(available_extensions, extension) != available_extensions.end();
     };
     const char* boost_env = std::getenv("BB_NV_BOOST");
-    if (boost_env && boost_env[0] == '0') {
+    // bbport (Supermedo e28a412b): BB_LOW_LATENCY=auto|on|boost: Reflex (NVIDIA) or Anti-Lag 2 (AMD)
+    // in full, which includes the boost hint. See vk_low_latency.h.
+    if (LowLatency::Wanted(physical_device.getProperties().vendorID)) {
+        if (const std::string owner = FindLatencyOwner(); !owner.empty()) {
+            std::printf("Low latency: off (%s is loaded and drives low latency itself)\n",
+                        owner.c_str());
+        } else {
+            present_id = feature_chain.get<vk::PhysicalDevicePresentIdFeaturesKHR>().presentId &&
+                         add_extension(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+            nv_low_latency =
+                present_id && feature_chain.get<vk::PhysicalDeviceVulkan12Features>().timelineSemaphore &&
+                add_extension(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+            amd_anti_lag = !nv_low_latency &&
+                           feature_chain.get<vk::PhysicalDeviceAntiLagFeaturesAMD>().antiLag &&
+                           add_extension(VK_AMD_ANTI_LAG_EXTENSION_NAME);
+        }
+    } else if (boost_env && boost_env[0] == '0') {
         std::printf("GPU: NVIDIA boost clocks off (BB_NV_BOOST=0)\n");
     } else if (!offered(VK_NV_LOW_LATENCY_2_EXTENSION_NAME) ||
                !offered(VK_KHR_PRESENT_ID_EXTENSION_NAME)) {
@@ -646,6 +664,12 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE{
             .shaderMixedFloatDotProductFloat16AccFloat32 = true,
         },
+        vk::PhysicalDevicePresentIdFeaturesKHR{
+            .presentId = true,
+        },
+        vk::PhysicalDeviceAntiLagFeaturesAMD{
+            .antiLag = true,
+        },
         vk::PhysicalDeviceFaultFeaturesEXT{
             .deviceFault = true,
         },
@@ -709,6 +733,12 @@ bool Instance::CreateDevice() {
     if (!mixed_float_dot_product) {
         device_chain.unlink<vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE>();
     }
+    if (!present_id) {
+        device_chain.unlink<vk::PhysicalDevicePresentIdFeaturesKHR>();
+    }
+    if (!amd_anti_lag) {
+        device_chain.unlink<vk::PhysicalDeviceAntiLagFeaturesAMD>();
+    }
     if (!device_fault) {
         device_chain.unlink<vk::PhysicalDeviceFaultFeaturesEXT>();
     }
@@ -739,6 +769,7 @@ bool Instance::CreateDevice() {
     device = std::move(dev);
 
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
+    LowLatency::Init(*this);
     if (Dlss* dlss = Dlss::Get()) {
         dlss->Initialize(*instance, physical_device, *device);
     }

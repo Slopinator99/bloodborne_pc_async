@@ -240,6 +240,8 @@ page take precedence:
 | Zeroed vertex buffer descriptors read as zero (a valid vertex format) | | `BB_NULL_VERTEX_INPUT=0` |
 | All engine hooks (in-game menus and features) | | `BB_ENGINE_HOOKS=0` |
 | NVIDIA GPUs keep their boost clocks (Reflex Boost hint, not with DLSS Frame Generation) | | `BB_NV_BOOST=0` |
+| Lower input latency: NVIDIA Reflex + Boost (the game waits between frames so they do not queue), frame limit kept before the frame starts. `auto` is on for NVIDIA only. AMD Anti-Lag 2 with `on` (slower on RX 9000 in tests). Untested on NVIDIA here | off | `BB_LOW_LATENCY=auto\|on\|boost` |
+| Latency log: game / GPU thread / waiting / present, every 5 s | | `BB_LATENCY_LOG=1` (or `BB_FRAME_STATS=1`) |
 | Hot pages: memory the game rewrites before almost every use stays writable and is uploaded on each use (at most 8 MiB) | | `BB_HOT_PAGES=0` off, `=1` the older rule (no size limit) |
 | Legacy CPU translations (on by themselves on CPUs without BMI1, LZCNT or MOVBE) | `legacy_cpu=0` or `1` | `BB_LEGACY_CPU=0` or `1` |
 

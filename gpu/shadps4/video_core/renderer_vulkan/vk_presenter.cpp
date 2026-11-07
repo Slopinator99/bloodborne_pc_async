@@ -39,6 +39,7 @@
 #include <thread>
 #include <vector>
 #include <vk_mem_alloc.h>
+#include "video_core/renderer_vulkan/vk_low_latency.h"
 #ifdef MemoryBarrier
 #undef MemoryBarrier // bbport: winnt.h macro (through fmt), clashes with vk::MemoryBarrier
 #endif
@@ -825,7 +826,11 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         wait_until(start + step * shown);
     }
     const auto presented_generated = std::chrono::steady_clock::now();
-    if (!PresentImage(frame, frame->image, true)) {
+    present_latency_id = !is_reusing_frame && is_game_frame ? frame->latency_id : 0;
+    LowLatency::WatchGpu(present_latency_id, frame->ready_semaphore, frame->ready_tick);
+    const bool presented = PresentImage(frame, frame->image, true);
+    present_latency_id = 0;
+    if (!presented) {
         if (shown) {
             // The frame's fence was not reset and so does not cover the generated frames'
             // blits: they must be done before the frame is drawn again.
@@ -1112,9 +1117,13 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last) {
     // Present to swapchain.
     {
         std::scoped_lock submit_lock{Scheduler::submit_mutex};
-        if (!swapchain.Present() && window.GetWidth() != 0 && window.GetHeight() != 0) {
+        const u64 latency_id = last ? present_latency_id : 0;
+        LowLatency::PresentStart(latency_id);
+        if (!swapchain.Present(vk::Queue{}, latency_id) && window.GetWidth() != 0 &&
+            window.GetHeight() != 0) {
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }
+        LowLatency::PresentEnd(latency_id);
     }
     return true;
 }

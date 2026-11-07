@@ -11,6 +11,7 @@
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_low_latency.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 
 namespace Vulkan {
@@ -56,7 +57,9 @@ void Swapchain::Create(u32 width_, u32 height_) {
     // bbport: the NVIDIA boost hint is set per swapchain, on one made with low latency allowed.
     const vk::SwapchainLatencyCreateInfoNV latency_info = {.latencyModeEnable = true};
     const vk::SwapchainCreateInfoKHR swapchain_info = {
-        .pNext = instance.IsLowLatencyBoostEnabled() ? &latency_info : nullptr,
+        .pNext = LowLatency::SwapchainCreateNext()
+                     ? LowLatency::SwapchainCreateNext()
+                     : instance.IsLowLatencyBoostEnabled() ? &latency_info : nullptr,
         .surface = surface,
         .minImageCount = image_count,
         .imageFormat = format.format,
@@ -80,6 +83,7 @@ void Swapchain::Create(u32 width_, u32 height_) {
                vk::to_string(swapchain_result));
     swapchain = chain;
     UpdateLatencyBoost(true);
+    LowLatency::OnSwapchain(swapchain);
 
     SetupImages();
     RefreshSemaphores();
@@ -172,9 +176,14 @@ bool Swapchain::AcquireNextImage() {
     return !needs_recreation;
 }
 
-bool Swapchain::Present() {
+bool Swapchain::Present(vk::Queue queue, u64 present_id) {
     UpdateLatencyBoost(false);
+    const vk::PresentIdKHR present_ids = {
+        .swapchainCount = 1,
+        .pPresentIds = &present_id,
+    };
     const vk::PresentInfoKHR present_info = {
+        .pNext = present_id && instance.IsPresentIdEnabled() ? &present_ids : nullptr,
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &present_ready[image_index],
         .swapchainCount = 1,
@@ -182,7 +191,7 @@ bool Swapchain::Present() {
         .pImageIndices = &image_index,
     };
 
-    auto result = instance.GetPresentQueue().presentKHR(present_info);
+    auto result = (queue ? queue : instance.GetPresentQueue()).presentKHR(present_info);
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
         needs_recreation = true;
     } else {
@@ -333,6 +342,7 @@ void Swapchain::Destroy() {
     images_view.clear();
 
     if (swapchain) {
+        LowLatency::OnSwapchain({});
         device.destroySwapchainKHR(swapchain);
     }
 
