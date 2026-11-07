@@ -8,6 +8,7 @@
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <filesystem>
 #include <variant>
 #include <vector>
 #include <unordered_map>
@@ -127,6 +128,11 @@ public:
     ~PipelineCache();
 
     void WarmUp();
+
+    /// bbport: the driver's own pipeline cache (its compiled GPU code), kept on disk next to the
+    /// shader cache: a pipeline the driver built once is not compiled again on the next start.
+    void CreateDriverCache();
+    void SaveDriverCache();
     void Sync();
 
     bool LoadComputePipeline(Serialization::Archive& ar);
@@ -274,6 +280,10 @@ private:
     void CompileAsyncCompute(AsyncComputeJob job);
     PipelineSelection sel{}; ///< GPU thread selection state
     ComputePipelineKey compute_key{};
+    std::filesystem::path driver_cache_file;
+    std::atomic<u32> driver_cache_changes{}; ///< pipelines made since the last save
+    std::mutex driver_cache_mutex;
+    std::jthread driver_cache_saver;
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
 
     // Only if Config::collectShadersForDebug()

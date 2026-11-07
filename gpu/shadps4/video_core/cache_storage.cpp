@@ -68,6 +68,8 @@ void ProcessIO(const std::stop_token& stoken) {
     }
 }
 
+constexpr const char* DriverCacheExtension = ".vkcache";
+
 constexpr std::string GetBlobFileExtension(BlobType type) {
     switch (type) {
     case BlobType::ShaderMeta: {
@@ -270,6 +272,13 @@ void DataBase::ForEachBlob(BlobType type, const std::function<void(std::vector<u
     }
 }
 
+std::filesystem::path DataBase::DriverCachePath() const {
+    if (EmulatorSettings.IsPipelineCacheArchived()) {
+        return std::filesystem::path{cache_path}.replace_extension(DriverCacheExtension);
+    }
+    return cache_path / (std::string{"driver"} + DriverCacheExtension);
+}
+
 void DataBase::Clear() {
     if (!opened || EmulatorSettings.IsPipelineCacheArchived()) {
         return;
@@ -277,7 +286,8 @@ void DataBase::Clear() {
     std::error_code ec;
     u64 removed = 0;
     for (const auto& entry : std::filesystem::directory_iterator(cache_path, ec)) {
-        if (entry.is_regular_file(ec) && std::filesystem::remove(entry.path(), ec)) {
+        if (entry.is_regular_file(ec) && entry.path().extension() != DriverCacheExtension &&
+            std::filesystem::remove(entry.path(), ec)) {
             ++removed;
         }
     }

@@ -664,6 +664,10 @@ void PipelineCache::WarmUp() {
             sel.fetch_shader.reset();
         });
     SetWindowStatus({});
+    // bbport: the preload filled the driver cache too: it is saved (CreateDriverCache).
+    if (num_pipelines) {
+        driver_cache_changes += u32(num_pipelines);
+    }
     if (prebuild) {
         std::printf("Shader pre-build: %u stored shader variants ready, pipelines or not\n",
                     variants);
