@@ -21,28 +21,16 @@ typedef struct Sema {
     unsigned active;
     int deleted;
     Waiter *first;
-    struct Sema *next;
 } Sema;
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
-static Sema *registry;
+/* Live semaphores by ID (IDs count up from 1 and are never reused), so a wait or signal finds
+ * its semaphore at once however many the game has made. */
+static Sema **by_id;
+static uint32_t by_id_size;
 static uint32_t next_id=1;
+static int trace;
 static size_t created, deleted, acquired, signaled, timed_out;
-/* bbport: a found semaphore moves to the front. New ones went in front, so the ones made at boot
- * sat behind every one made since, each wait and signal walking past them under the one lock
- * (from Awakenchan 0.9.34 beta 9.9). Not for the diagnostic snapshot, which leaves the order
- * alone. BB_SEMA_FRONT=0: the list keeps its order, as before. */
-static Sema *find_ordered(uint32_t id,int reorder) {
-    static int front=-1;
-    if (front<0) { const char *e=getenv("BB_SEMA_FRONT"); front=!(e && e[0]=='0'); }
-    Sema **link=&registry;
-    for (Sema *s=registry;s;link=&s->next,s=s->next) {
-        if (s->id!=id) continue;
-        if (reorder && front && link!=&registry) { *link=s->next; s->next=registry; registry=s; }
-        return s;
-    }
-    return NULL;
-}
-static Sema *find(uint32_t id) { return find_ordered(id,1); }
+static Sema *find(uint32_t id) { return id<by_id_size ? by_id[id] : NULL; }
 static void host_check(int e) {
     if (e) { fprintf(stderr,"STOP: semaphore host error %d\n",e); exit(21); }
 }
@@ -66,8 +54,16 @@ static ABI int32_t sem_create(uint32_t *out,const char *name,uint32_t attr,
     if (!s) return ERR(12);
     pthread_mutex_lock(&lock);
     if (next_id==UINT32_MAX) { pthread_mutex_unlock(&lock); free(s); return ERR(28); }
+    if (next_id>=by_id_size) {
+        uint32_t size=by_id_size ? (by_id_size<UINT32_MAX/2 ? by_id_size*2 : UINT32_MAX) : 256;
+        Sema **grown=realloc(by_id,(size_t)size*sizeof(*grown));
+        if (!grown) { pthread_mutex_unlock(&lock); free(s); return ERR(12); }
+        memset(grown+by_id_size,0,(size_t)(size-by_id_size)*sizeof(*grown));
+        by_id=grown; by_id_size=size;
+    }
+    if (!created) trace=getenv("BB_TRACE_SEMA")!=NULL; /* read once: getenv is slow on Windows */
     s->id=next_id++; s->attr=attr; s->count=s->initial=initial; s->maximum=maximum;
-    s->next=registry; registry=s; *out=s->id; ++created;
+    by_id[s->id]=s; *out=s->id; ++created;
     printf("Runtime: semaphore id=%u, attr=%u, initial=%d, max=%d\n",s->id,attr,initial,maximum);
     pthread_mutex_unlock(&lock);
     return 0;
@@ -84,7 +80,7 @@ static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) 
     else {
         /* Priority-ordered semaphores (attr 2) are served FIFO: there is no
            PS4 priority scheduler, host threads run at equal priority. */
-        if (getenv("BB_TRACE_SEMA")) fprintf(stderr,"Runtime: blocking wait on semaphore %u (need %d, count %d)\n",id,need,s->count); /* deadlock diagnosis */
+        if (trace) fprintf(stderr,"Runtime: blocking wait on semaphore %u (need %d, count %d)\n",id,need,s->count); /* deadlock diagnosis */
         Waiter w={.need=need};
         pthread_condattr_t attr;
         host_check(pthread_condattr_init(&attr));
@@ -162,10 +158,9 @@ static ABI int32_t sem_cancel(uint32_t id,int32_t count,int32_t *waiters) {
 }
 static ABI int32_t sem_delete(uint32_t id) {
     pthread_mutex_lock(&lock);
-    Sema **p=&registry;
-    while (*p && (*p)->id!=id) p=&(*p)->next;
-    if (!*p) { pthread_mutex_unlock(&lock); return ERR(3); }
-    Sema *s=*p; *p=s->next; s->deleted=1; ++deleted;
+    Sema *s=find(id);
+    if (!s) { pthread_mutex_unlock(&lock); return ERR(3); }
+    by_id[id]=NULL; s->deleted=1; ++deleted;
     wake_all(s,ERR(13));
     if (!s->active) free(s);
     pthread_mutex_unlock(&lock);
@@ -174,7 +169,7 @@ static ABI int32_t sem_delete(uint32_t id) {
 /* Read-only test/diagnostic snapshot, not exposed to guest code. */
 unsigned runtime_sema_waiters(uint32_t id) {
     pthread_mutex_lock(&lock);
-    Sema *s=find_ordered(id,0); unsigned n=0;
+    Sema *s=find(id); unsigned n=0;
     if (s) for (Waiter *w=s->first;w;w=w->next) ++n;
     pthread_mutex_unlock(&lock);
     return n;

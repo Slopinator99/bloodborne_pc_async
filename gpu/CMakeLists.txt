@@ -242,12 +242,12 @@ target_link_libraries(bbnet PRIVATE OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
 if (WIN32)
     target_sources(bbnet PRIVATE third_party/wepoll/wepoll.c)
     target_include_directories(bbnet PRIVATE third_party/wepoll)
-    find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
-    find_library(MINIUPNPC_LIBRARY NAMES libminiupnpc.a miniupnpc REQUIRED)
-    target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
     target_compile_definitions(bbnet PRIVATE MINIUPNP_STATICLIB)
-    target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
 endif()
+find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
+find_library(MINIUPNPC_LIBRARY NAMES libminiupnpc.a miniupnpc REQUIRED)
+target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
+target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
 target_compile_definitions(bbnet PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
 target_compile_options(bbnet PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
 target_link_libraries(bbnet PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
@@ -314,6 +314,18 @@ if (WIN32)
     # The PS4 range (64 GiB - 1 TiB) must stay free: no high-entropy ASLR for heaps and stacks.
     # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
     target_link_options(bb-probe PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
+    # The runtime's own tests (tests/test_runtime.py runs them): ninja -C out/gpu runtime-test, then
+    # copy out/gpu/runtime-test.exe to out/. bb-probe's sources with the test's main in place of probe.c.
+    get_target_property(BB_RUNTIME_TEST_SOURCES bb-probe SOURCES)
+    list(FILTER BB_RUNTIME_TEST_SOURCES EXCLUDE REGEX "probe[.]c$")
+    add_executable(runtime-test EXCLUDE_FROM_ALL ../tests/test_runtime.c ../tests/test_runtime_stubs.c
+        ${BB_RUNTIME_TEST_SOURCES})
+    target_compile_definitions(runtime-test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    set_target_properties(runtime-test PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+    target_compile_options(runtime-test PRIVATE -UNDEBUG) # the checks are assert()s
+    target_include_directories(runtime-test PRIVATE .. ../src)
+    target_link_libraries(runtime-test PRIVATE bbgpu atrac9 onecore bcrypt ws2_32 -pthread)
+    target_link_options(runtime-test PRIVATE -Wl,--disable-high-entropy-va)
     add_executable(bb-gpu-capabilities ../tools/gpu_capabilities.c ../packaging/windows/bb-gpu-capabilities.rc)
     target_link_libraries(bb-gpu-capabilities PRIVATE Vulkan::Vulkan)
     # "Play Bloodborne.exe": the game with the launcher's saved settings, no launcher window.
